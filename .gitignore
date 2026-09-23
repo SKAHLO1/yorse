@@ -1,0 +1,47 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+!.env.example
+
+# foundry
+# Third-party Solidity dependencies (~13MB). Reinstall with: cd contracts && ./install-deps.sh
+/contracts/lib/
+# Build output and compiler cache
+/contracts/out/
+/contracts/cache/
+# Local/simulated runs. run-latest.json for a real chain is kept as a deployment record.
+/contracts/broadcast/*/31337/
+/contracts/broadcast/**/dry-run/
+/contracts/broadcast/**/run-[0-9]*.json
+
+# backend
+/backend/node_modules/
+/backend/dist/
+
+# firebase / service accounts
+*service-account*.json
+*-firebase-adminsdk-*.json
