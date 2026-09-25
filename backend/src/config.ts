@@ -38,7 +38,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
 
   let firebase: { projectId: string; clientEmail: string; privateKey: string }
   if (e.FIREBASE_SERVICE_ACCOUNT_PATH) {
-    const sa = JSON.parse(readFileSync(e.FIREBASE_SERVICE_ACCOUNT_PATH, "utf8"))
+    // A path typo is the usual cause here (e.g. a Render secret file lives at /etc/secrets/<name>).
+    let sa: { project_id?: string; client_email?: string; private_key?: string }
+    try {
+      sa = JSON.parse(readFileSync(e.FIREBASE_SERVICE_ACCOUNT_PATH, "utf8"))
+    } catch (err) {
+      throw new Error(
+        `Could not read the Firebase service account at FIREBASE_SERVICE_ACCOUNT_PATH="${e.FIREBASE_SERVICE_ACCOUNT_PATH}": ${(err as Error).message}`,
+      )
+    }
+    if (!sa.project_id || !sa.client_email || !sa.private_key) {
+      throw new Error(
+        `${e.FIREBASE_SERVICE_ACCOUNT_PATH} is not a Firebase service-account key (expected project_id, client_email and private_key)`,
+      )
+    }
     firebase = { projectId: sa.project_id, clientEmail: sa.client_email, privateKey: sa.private_key }
   } else if (e.FIREBASE_PROJECT_ID && e.FIREBASE_CLIENT_EMAIL && e.FIREBASE_PRIVATE_KEY) {
     firebase = { projectId: e.FIREBASE_PROJECT_ID, clientEmail: e.FIREBASE_CLIENT_EMAIL, privateKey: e.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n") }
