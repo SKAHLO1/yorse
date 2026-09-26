@@ -9,7 +9,7 @@ import { ArrowRight, Briefcase, Check, Copy, HardHat, Link2, Plus, Wallet } from
 import { AppShell } from "@/components/app/app-shell"
 import { LiveFeed } from "@/components/app/feed"
 import { StatusBadge } from "@/components/app/status-badge"
-import { useLinkWallet } from "@/components/app/wallet-button"
+import { LinkWalletButton } from "@/components/app/wallet-button"
 import { useAuth } from "@/components/auth-provider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -221,9 +221,8 @@ function Stat({ label, value, highlight }: { label: string; value: string; highl
 }
 
 function WalletCard() {
-  const { me, refreshMe } = useAuth()
+  const { me } = useAuth()
   const { address, isConnected } = useConnection()
-  const { link, busy } = useLinkWallet(refreshMe)
   if (!me) return null
   if (me.walletAddress && (!address || isAddressEqual(me.walletAddress, address))) {
     return (
@@ -243,13 +242,7 @@ function WalletCard() {
             ? `Your account is linked to ${shortAddr(me.walletAddress)}. Switch to it in your wallet, or link the connected one instead.`
             : "Clients fund escrow from their linked wallet; developers are paid to theirs. Linking only asks you to sign a message — no transaction, no gas."}
         </p>
-        {isConnected && address ? (
-          <Button size="sm" onClick={() => link(address)} disabled={busy}>
-            {busy ? "Waiting for signature…" : `Link ${shortAddr(address)}`}
-          </Button>
-        ) : (
-          <p className="text-xs">Use “Connect wallet” in the top bar first.</p>
-        )}
+        <LinkWalletButton />
       </AlertDescription>
     </Alert>
   )

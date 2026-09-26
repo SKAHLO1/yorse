@@ -6,6 +6,7 @@ import { useState } from "react"
 import { toast } from "sonner"
 import { Plus, Radio, UserRoundPlus, X } from "lucide-react"
 import { AppShell } from "@/components/app/app-shell"
+import { LinkWalletButton } from "@/components/app/wallet-button"
 import { useAuth } from "@/components/auth-provider"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -81,7 +82,10 @@ function NewJobForm() {
       </div>
       {me && !me.walletAddress && (
         <Alert className="border-brand-orange/40">
-          <AlertDescription>Link a wallet first (top bar → Connect wallet → Link). You fund escrow from that wallet.</AlertDescription>
+          <AlertDescription className="space-y-3">
+            <p>You fund the escrow from your linked wallet, so link one before posting a job. Linking asks for a signature only — free, and no transaction.</p>
+            <LinkWalletButton />
+          </AlertDescription>
         </Alert>
       )}
       <form onSubmit={submit}>
