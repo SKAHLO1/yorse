@@ -111,7 +111,7 @@ const cases: Case[] = [
 ]
 
 const providers: AiProvider[] = []
-if (process.env.GROQ_API_KEY) providers.push(groqProvider({ apiKey: process.env.GROQ_API_KEY, model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile" }))
+if (process.env.GROQ_API_KEY) providers.push(groqProvider({ apiKey: process.env.GROQ_API_KEY, model: process.env.GROQ_MODEL ?? "openai/gpt-oss-120b" }))
 if (process.env.GEMINI_API_KEY) providers.push(geminiProvider({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash" }))
 if (!providers.length) {
   console.error("Set GROQ_API_KEY and/or GEMINI_API_KEY in backend/.env")

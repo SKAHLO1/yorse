@@ -61,7 +61,7 @@ export function VerdictSection() {
               <span className="text-white">Uncertain means dispute.</span> Low confidence, missing evidence or an unreachable link sends the job to a human admin instead of paying out.
             </li>
             <li>
-              <span className="text-white">Resilient.</span> Groq (Llama 3.3 70B) runs first, and Google Gemini takes over automatically if Groq is rate-limited or down.
+              <span className="text-white">Resilient.</span> Groq (GPT-OSS 120B) runs first, and Google Gemini takes over automatically if Groq is rate-limited or down.
             </li>
             <li>
               <span className="text-white">Injection-aware.</span> Instructions hidden in a submission are treated as data and flagged, never obeyed.

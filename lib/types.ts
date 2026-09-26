@@ -82,6 +82,9 @@ export interface Me {
   uid: string
   email: string
   displayName: string | null
+  photoUrl: string | null
+  ratingAsFreelancer: RatingSummary
+  ratingAsClient: RatingSummary
   walletAddress: `0x${string}` | null
   walletLinkedAt: string | null
   admin: boolean

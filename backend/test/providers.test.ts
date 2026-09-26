@@ -40,6 +40,31 @@ describe("AI providers", () => {
   })
 })
 
+describe("rate limits", () => {
+  it("retries once when Groq reports a short wait, then succeeds", async () => {
+    let calls = 0
+    const fetchFn = async () => {
+      calls++
+      return calls === 1
+        ? new Response('{"error":{"message":"Rate limit reached... Please try again in 0.05s."}}', { status: 429 })
+        : groqOk(JSON.stringify(verdict))
+    }
+    const r = await groqProvider({ apiKey: "k", model: "m", fetchFn: fetchFn as any }).evaluate(input)
+    expect(r.verdict).toBe("dispute")
+    expect(calls).toBe(2)
+  })
+
+  it("gives up (so the fallback provider can take over) when the wait is too long", async () => {
+    let calls = 0
+    const fetchFn = async () => {
+      calls++
+      return new Response('{"error":{"message":"Rate limit reached... Please try again in 600s."}}', { status: 429 })
+    }
+    await expect(groqProvider({ apiKey: "k", model: "m", fetchFn: fetchFn as any }).evaluate(input)).rejects.toThrow(/429/)
+    expect(calls).toBe(1)
+  })
+})
+
 describe("verifier fallback", () => {
   it("falls back to Gemini when Groq is rate limited", async () => {
     const groq = groqProvider({ apiKey: "k", model: "g", fetchFn: (async () => new Response("rate limited", { status: 429 })) as any })

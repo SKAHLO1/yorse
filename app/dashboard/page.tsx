@@ -2,10 +2,11 @@
 
 import { useQuery } from "@tanstack/react-query"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
 import { isAddressEqual } from "viem"
 import { useConnection } from "wagmi"
-import { ArrowRight, Briefcase, Check, Copy, HardHat, Link2, Plus, Wallet } from "lucide-react"
+import { ArrowRight, Briefcase, Check, Copy, HardHat, Link2, LogOut, Plus, Wallet } from "lucide-react"
 import { AppShell } from "@/components/app/app-shell"
 import { LiveFeed } from "@/components/app/feed"
 import { StatusBadge } from "@/components/app/status-badge"
@@ -33,7 +34,8 @@ export default function DashboardPage() {
 }
 
 function Dashboard() {
-  const { me } = useAuth()
+  const { me, signOut } = useAuth()
+  const router = useRouter()
   const [mode, setMode] = useState<Mode>("hiring")
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: () => api<{ jobs: Job[] }>("/jobs").then((r) => r.jobs), enabled: !!me })
 
@@ -60,13 +62,18 @@ function Dashboard() {
     <div className="space-y-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <ModeSwitch mode={mode} onChange={choose} hiringCount={asClient.length} workingCount={asFreelancer.length} />
-        {mode === "hiring" && (
-          <Button asChild>
-            <Link href="/jobs/new">
-              <Plus className="size-4" /> New job
-            </Link>
+        <div className="flex items-center gap-2">
+          {mode === "hiring" && (
+            <Button asChild>
+              <Link href="/jobs/new">
+                <Plus className="size-4" /> New job
+              </Link>
+            </Button>
+          )}
+          <Button variant="outline" onClick={() => signOut().then(() => router.replace("/login"))}>
+            <LogOut className="size-4" /> Sign out
           </Button>
-        )}
+        </div>
       </div>
 
       <WalletCard />

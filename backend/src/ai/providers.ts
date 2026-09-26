@@ -22,22 +22,41 @@ export class ProviderError extends Error {
 
 type FetchFn = typeof fetch
 const TIMEOUT_MS = 45_000
+/** Longer than this and it is better to fall back to the other provider. */
+const MAX_RETRY_WAIT_S = 12
+
+/** Seconds to wait from a 429, using the retry-after header or the "try again in 3.3s" hint. Capped. */
+function retryDelayMs(res: Response, body: string): number | null {
+  const header = Number(res.headers.get("retry-after"))
+  const fromBody = body.match(/try again in ([\d.]+)\s*(ms|s)\b/i)
+  const seconds = Number.isFinite(header) && header > 0 ? header : fromBody ? Number(fromBody[1]) / (fromBody[2].toLowerCase() === "ms" ? 1000 : 1) : null
+  if (seconds === null || !Number.isFinite(seconds)) return null
+  return seconds <= MAX_RETRY_WAIT_S ? Math.ceil(seconds * 1000) + 250 : null
+}
 
 async function postJson(provider: ProviderName, fetchFn: FetchFn, url: string, headers: Record<string, string>, body: unknown) {
   let res: Response
-  try {
-    res = await fetchFn(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    })
-  } catch (err) {
-    throw new ProviderError(provider, `request failed: ${(err as Error).message}`)
-  }
-  const text = await res.text()
-  if (!res.ok) {
-    throw new ProviderError(provider, `HTTP ${res.status}: ${text.slice(0, 300)}`, res.status, res.status === 429)
+  let text: string
+  // Free tiers hit short token-per-minute limits; one brief wait beats failing the whole verification.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetchFn(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      })
+    } catch (err) {
+      throw new ProviderError(provider, `request failed: ${(err as Error).message}`)
+    }
+    text = await res.text()
+    if (res.ok) break
+    const wait = res.status === 429 && attempt === 0 ? retryDelayMs(res, text) : null
+    if (wait === null) {
+      throw new ProviderError(provider, `HTTP ${res.status}: ${text.slice(0, 300)}`, res.status, res.status === 429)
+    }
+    console.warn(`[ai] ${provider} rate limited, retrying once in ${wait}ms`)
+    await new Promise((r) => setTimeout(r, wait))
   }
   try {
     return JSON.parse(text)
@@ -46,7 +65,7 @@ async function postJson(provider: ProviderName, fetchFn: FetchFn, url: string, h
   }
 }
 
-/** Groq (OpenAI-compatible). Default model: Llama 3.3 70B. */
+/** Groq (OpenAI-compatible). Default model: GPT-OSS 120B. */
 export function groqProvider(opts: { apiKey: string; model: string; fetchFn?: FetchFn }): AiProvider {
   const fetchFn = opts.fetchFn ?? fetch
   return {
