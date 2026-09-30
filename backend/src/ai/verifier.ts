@@ -42,7 +42,9 @@ export function createVerifier(providers: AiProvider[]): AiVerifier {
     providers: providers.map((p) => ({ name: p.name, model: p.model })),
     async verify(input) {
       const attempts: AttemptLog[] = []
-      for (const p of providers) {
+      // With screenshots, ask a model that can see them first; text-only models remain the fallback.
+      const ordered = input.images?.length ? [...providers.filter((p) => p.vision), ...providers.filter((p) => !p.vision)] : providers
+      for (const p of ordered) {
         const started = Date.now()
         try {
           const result = await p.evaluate(input)
@@ -51,7 +53,7 @@ export function createVerifier(providers: AiProvider[]): AiVerifier {
         } catch (err) {
           const msg = (err as Error).message
           attempts.push({ provider: p.name, model: p.model, ok: false, error: msg, ms: Date.now() - started })
-          console.warn(`[ai] ${p.name} failed, ${providers.indexOf(p) < providers.length - 1 ? "falling back" : "no fallback left"}: ${msg}`)
+          console.warn(`[ai] ${p.name} failed, ${ordered.indexOf(p) < ordered.length - 1 ? "falling back" : "no fallback left"}: ${msg}`)
         }
       }
       throw new AiUnavailableError(attempts)
