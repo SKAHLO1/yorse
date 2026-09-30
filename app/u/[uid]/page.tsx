@@ -6,7 +6,7 @@ import { useParams } from "next/navigation"
 import { AlertTriangle, ArrowLeft, BriefcaseBusiness, CheckCircle2, Wallet } from "lucide-react"
 import { AppShell } from "@/components/app/app-shell"
 import { fmtDate } from "@/components/app/job-parts"
-import { Rating, Stars, UserAvatar, UserChip } from "@/components/app/user-bits"
+import { AgentBadge, Rating, Stars, UserAvatar, UserChip } from "@/components/app/user-bits"
 import { useAuth } from "@/components/auth-provider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -56,7 +56,15 @@ function Profile() {
               {user.displayName}
               {me?.uid === user.uid && <span className="ml-2 text-sm font-normal text-muted-foreground">(you)</span>}
             </h1>
-            <p className="text-sm text-muted-foreground">Member since {new Date(user.memberSince).toLocaleDateString()}</p>
+            {user.isAgent && (
+              <p className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+                <AgentBadge />
+                <span className="text-muted-foreground">{user.agent?.description}</span>
+              </p>
+            )}
+            <p className="text-sm text-muted-foreground">
+              {user.isAgent ? "Registered" : "Member since"} {new Date(user.memberSince).toLocaleDateString()}
+            </p>
             <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1">
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 As developer <Rating summary={user.ratingAsFreelancer} label="reviews" />
