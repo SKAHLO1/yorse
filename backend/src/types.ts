@@ -8,14 +8,33 @@ export type JobStatus =
   | "awaiting_funding" // terms agreed, client must fund on-chain
   | "funded"
   | "submitted" // on-chain Submitted; AI verification pending, running, errored, or its chain action failed
-  | "released"
-  | "disputed"
+  | "proposed" // AI verdict posted on-chain; challenge window open
+  | "challenged" // a party posted a bond (or the AI was unsure); arguments, then the AI jury
+  | "released" // paid to the freelancer by an unchallenged proposal or the jury
+  | "refunded" // returned to the client by an unchallenged proposal or the jury
+  | "disputed" // human admin review
   | "resolved_release"
   | "resolved_refund"
 
-export const TERMINAL_STATUSES: JobStatus[] = ["released", "resolved_release", "resolved_refund"]
-export const COMPLAINABLE_STATUSES: JobStatus[] = ["released", "disputed", "resolved_release", "resolved_refund"]
-export const ACTIVE_STATUSES: JobStatus[] = ["open", "pending_acceptance", "awaiting_funding", "funded", "submitted", "disputed"]
+export const ALL_STATUSES: JobStatus[] = [
+  "open",
+  "pending_acceptance",
+  "declined",
+  "cancelled",
+  "awaiting_funding",
+  "funded",
+  "submitted",
+  "proposed",
+  "challenged",
+  "released",
+  "refunded",
+  "disputed",
+  "resolved_release",
+  "resolved_refund",
+]
+export const TERMINAL_STATUSES: JobStatus[] = ["released", "refunded", "resolved_release", "resolved_refund"]
+export const COMPLAINABLE_STATUSES: JobStatus[] = ["released", "refunded", "disputed", "resolved_release", "resolved_refund"]
+export const ACTIVE_STATUSES: JobStatus[] = ["open", "pending_acceptance", "awaiting_funding", "funded", "submitted", "proposed", "challenged", "disputed"]
 
 export type Role = "client" | "freelancer"
 
@@ -30,8 +49,12 @@ export interface RatingSummary {
 
 export interface UserProfile {
   uid: string
+  /** Agents get a synthetic address (<wallet>@agents.yorse.app); it is never shown publicly. */
   email: string
   displayName: string | null
+  /** Missing on profiles created before agents existed: treat as "human". */
+  kind?: "human" | "agent"
+  agent?: { description: string; homepage: string | null } | null
   /** From the Firebase token's picture claim (Google sign-in). Null means the UI shows an initials avatar. */
   photoUrl: string | null
   /** Public reputation, recomputed whenever a review is posted or moderated. */
@@ -46,7 +69,18 @@ export interface UserProfile {
   updatedAt: string
 }
 
-export type ChainActionType = "markSubmitted" | "release" | "dispute" | "refund"
+export type ChainActionType = "markSubmitted" | "proposeVerdict" | "escalate" | "finalize" | "resolveChallenge" | "dispute" | "resolve"
+
+/** Final money movement. "release" pays the freelancer, "refund" returns funds to the client. */
+export type Outcome = "release" | "refund"
+/** What the backend does with a first AI verdict: propose an outcome, or send it straight to the jury. */
+export type DecisionAction = Outcome | "escalate"
+
+/** On-chain hash of a record plus the exact string that was hashed. See lib/commit.ts. */
+export interface Commitment {
+  hash: `0x${string}`
+  canonical: string
+}
 
 export interface ChainAction {
   type: ChainActionType
@@ -86,10 +120,32 @@ export interface Job {
     verificationId: string | null
   }
   /** Set when a verdict exists but its on-chain action has not been confirmed yet. Never re-run AI in this case. */
-  pendingDecision: "release" | "dispute" | null
+  pendingDecision: DecisionAction | null
+  /** The AI verdict as posted on-chain: finalizes after `deadline` unless the losing party challenges. */
+  proposal: { outcome: Outcome; verdictHash: string; deadline: string; txHash: string; at: string } | null
+  /**
+   * Set once a job is Challenged on-chain: either a party posted a bond, or the AI was unsure and
+   * escalated (source "ai_uncertain", no bond). Both sides may argue until `argumentDeadline`.
+   */
+  challenge: {
+    source: "party" | "ai_uncertain"
+    challengerUid: string | null
+    challengerRole: Role | null
+    challengerWallet: string | null
+    bondUnits: string
+    bondUsdc: string
+    txHash: string | null
+    arguments: { client: string | null; freelancer: string | null }
+    argumentDeadline: string
+    at: string
+  } | null
+  /** AI jury run state for the current challenge. */
+  jury: { state: "idle" | "running" | "error" | "done"; error: string | null; startedAt: string | null; rulingId: string | null }
+  /** Set when a jury ruling exists but its on-chain action has not been confirmed yet. Never re-run the jury then. */
+  pendingRuling: Outcome | "split" | null
   lastChainAction: ChainAction | null
-  dispute: { reason: string; source: "ai" | "client" | "admin"; byUid: string | null; at: string } | null
-  resolution: { outcome: "release" | "refund"; notes: string; adminUid: string; adminEmail: string; txHash: string; at: string } | null
+  dispute: { reason: string; source: "ai" | "client" | "admin" | "jury" | "timeout"; byUid: string | null; at: string } | null
+  resolution: { outcome: Outcome; notes: string; adminUid: string; adminEmail: string; txHash: string; rulingHash: string; at: string } | null
   createdAt: string
   updatedAt: string
 }
@@ -104,6 +160,8 @@ export interface Submission {
   notes: string | null
   /** markSubmitted tx. Null means the on-chain step failed and this submission was not accepted. */
   onchainTxHash: string | null
+  /** Committed on-chain by markSubmitted, so the deliverable cannot be swapped after the fact. */
+  commitment: Commitment
   createdAt: string
 }
 
@@ -124,11 +182,49 @@ export interface Verification {
   model: string | null
   result: AiVerdict | null
   /** Outcome of the backend decision rule, not the model's raw word. */
-  decision: "release" | "dispute" | null
+  decision: DecisionAction | null
   decisionReason: string | null
   threshold: number
   attempts: { provider: string; model: string; ok: boolean; error: string | null; ms: number }[]
-  evidence: { url: string | null; fetched: boolean; note: string | null }
+  evidence: {
+    url: string | null
+    fetched: boolean
+    note: string | null
+    excerpt: string | null
+    /** What a real browser rendered, as the vision model saw it. */
+    screenshots?: { label: "desktop" | "mobile"; mimeType: "image/jpeg"; base64: string; width: number; height: number; hash: `0x${string}` }[]
+  }
+  /** Set for completed verdicts: the hash posted on-chain with proposeVerdict/escalate. */
+  commitment: Commitment | null
+  error: string | null
+  createdAt: string
+}
+
+export type JurorVote = "release" | "refund" | "abstain"
+
+export interface JurorResult {
+  provider: string
+  model: string
+  ok: boolean
+  error: string | null
+  ms: number
+  vote: JurorVote | null
+  confidence: number | null
+  matched_criteria: string[]
+  unmatched_criteria: string[]
+  reasoning: string | null
+}
+
+/** A ruling on a challenged job: an AI jury's majority, or a split that goes to an admin. */
+export interface Ruling {
+  id: string
+  jobId: string
+  status: "completed" | "error"
+  outcome: Outcome | "split" | null
+  reason: string | null
+  jurors: JurorResult[]
+  tally: { release: number; refund: number; abstain: number; failed: number }
+  commitment: Commitment | null
   error: string | null
   createdAt: string
 }
@@ -163,6 +259,17 @@ export interface Complaint {
   handledByUid: string | null
   createdAt: string
   updatedAt: string
+}
+
+/** Agent API key. `id` is the SHA-256 of the key; the key itself is never stored. */
+export interface ApiKey {
+  id: string
+  uid: string
+  /** First characters of the key, so the owner can tell keys apart. */
+  prefix: string
+  createdAt: string
+  lastUsedAt: string | null
+  revokedAt: string | null
 }
 
 export type ReviewStatus = "published" | "hidden"
@@ -206,6 +313,8 @@ export interface PublicUser {
   uid: string
   displayName: string
   photoUrl: string | null
+  isAgent: boolean
+  agent: { description: string; homepage: string | null } | null
   ratingAsFreelancer: RatingSummary
   ratingAsClient: RatingSummary
   memberSince: string
