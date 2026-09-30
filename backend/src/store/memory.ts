@@ -11,6 +11,8 @@ export function createMemoryStore(): Store {
   const subs = new Map<string, any>()
   const vers = new Map<string, any>()
   const events = new Map<string, any>()
+  const rulings = new Map<string, any>()
+  const apiKeys = new Map<string, any>()
   const applications = new Map<string, any>()
   const complaints = new Map<string, any>()
   const reviews = new Map<string, any>()
@@ -80,6 +82,25 @@ export function createMemoryStore(): Store {
       create: async (v) => void vers.set(`${v.jobId}/${v.id}`, clone(v)),
       get: async (jobId, id) => clone(vers.get(`${jobId}/${id}`) ?? null),
       listForJob: async (jobId) => all(vers).filter((v) => v.jobId === jobId).sort(byCreatedDesc),
+    },
+
+    apiKeys: {
+      create: async (k) => {
+        if (apiKeys.has(k.id)) throw conflict("API key already exists")
+        apiKeys.set(k.id, clone(k))
+      },
+      get: async (id) => clone(apiKeys.get(id) ?? null),
+      update: async (id, patch) => {
+        if (!apiKeys.has(id)) throw notFound("API key")
+        apiKeys.set(id, { ...apiKeys.get(id), ...clone(patch) })
+      },
+      listForUid: async (uid) => all(apiKeys).filter((k) => k.uid === uid).sort(byCreatedDesc),
+    },
+
+    rulings: {
+      create: async (r) => void rulings.set(`${r.jobId}/${r.id}`, clone(r)),
+      get: async (jobId, id) => clone(rulings.get(`${jobId}/${id}`) ?? null),
+      listForJob: async (jobId) => all(rulings).filter((r) => r.jobId === jobId).sort(byCreatedDesc),
     },
 
     events: {
