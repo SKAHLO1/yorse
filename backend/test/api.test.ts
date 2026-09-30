@@ -1,5 +1,7 @@
 import request from "supertest"
+import { keccak256, stringToHex } from "viem"
 import { describe, expect, it } from "vitest"
+import type { VerdictResult } from "../src/ai/schema"
 import { futureDate, setup } from "./helpers"
 
 const criteria = ["Responsive landing page with hero section", "Contact form posts to /api/contact", "Lighthouse performance score above 90"]
@@ -11,6 +13,13 @@ const releaseVerdict = {
   reasoning: "The fetched page contains a hero section, a form posting to /api/contact, and the README reports a Lighthouse score of 97.",
 }
 const lowConfidence = { ...releaseVerdict, confidence: 0.6, reasoning: "The page has a hero but the Lighthouse claim is unverified; evidence is thin." }
+const confidentFail = {
+  verdict: "dispute" as const,
+  confidence: 0.9,
+  matched_criteria: criteria.slice(1),
+  unmatched_criteria: criteria.slice(0, 1),
+  reasoning: "The fetched page has no hero section; the contact form and the Lighthouse report are present.",
+}
 
 async function fundedJob(ctx: Awaited<ReturnType<typeof world>>) {
   const { client, freelancer, chain } = ctx
@@ -39,7 +48,7 @@ async function fundedJob(ctx: Awaited<ReturnType<typeof world>>) {
 }
 
 async function world() {
-  const s = setup()
+  const s = setup({ criteria })
   const client = await s.user("client")
   const freelancer = await s.user("freelancer")
   const admin = await s.user("admin", { admin: true, wallet: false })
@@ -111,8 +120,11 @@ describe("funding", () => {
   })
 })
 
-describe("auto-release path", () => {
-  it("submission → AI release (≥0.85, all criteria) → escrow.release → released", async () => {
+const onchain = (w: Awaited<ReturnType<typeof world>>, job: any) => w.chain.jobs.get(job.onchainJobId)!
+const detailOf = async (w: Awaited<ReturnType<typeof world>>, job: any) => (await w.client.get(`/api/jobs/${job.id}`)).body
+
+describe("optimistic path: propose → window → finalize", () => {
+  it("AI release is only a proposal; nobody challenges; the keeper finalizes after the window", async () => {
     const w = await world()
     const job = await fundedJob(w)
     w.ai.queue.push(releaseVerdict)
@@ -123,14 +135,36 @@ describe("auto-release path", () => {
     const r = await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
     expect(r.status, JSON.stringify(r.body)).toBe(201)
     expect(r.body.verification).toMatchObject({ ok: true, decision: "release" })
-    expect(w.chain.jobs.get(job.onchainJobId)!.state).toBe("Released")
+    // No money moved yet: the verdict is a challengeable proposal.
+    expect(onchain(w, job).state).toBe("Proposed")
+    expect(onchain(w, job).proposed).toBe("Release")
 
-    const detail = (await w.client.get(`/api/jobs/${job.id}`)).body
+    let detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("proposed")
+    expect(detail.job.proposal.outcome).toBe("release")
+    expect(detail.arbitration).toMatchObject({ canChallenge: "client", bondBps: 1000, bond: { units: "25000000", display: "25.00" } })
+
+    // Commitments: the deliverable and the verdict hashes on-chain match the stored records.
+    const sub = detail.submissions[0]
+    expect(onchain(w, job).deliverableHash).toBe(sub.commitment.hash)
+    expect(keccak256(stringToHex(sub.commitment.canonical))).toBe(sub.commitment.hash)
+    const v = detail.verifications[0]
+    expect(onchain(w, job).verdictHash).toBe(v.commitment.hash)
+    expect(keccak256(stringToHex(v.commitment.canonical))).toBe(v.commitment.hash)
+    expect(JSON.parse(v.commitment.canonical)).toMatchObject({ kind: "yorse.verdict", deliverableHash: sub.commitment.hash, model: "test" })
+
+    // Finalizing early is refused, by the API and by the keeper.
+    expect((await w.freelancer.post(`/api/jobs/${job.id}/finalize`)).status).toBe(409)
+    await w.keeper.tick()
+    expect(onchain(w, job).state).toBe("Proposed")
+
+    w.clock.advance(180)
+    await w.keeper.tick()
+    expect(onchain(w, job).state).toBe("Released")
+    detail = await detailOf(w, job)
     expect(detail.job.status).toBe("released")
-    expect(detail.verifications[0].result.reasoning).toContain("Lighthouse")
-    expect(detail.verifications[0].decision).toBe("release")
     expect(detail.events.map((e: any) => e.type)).toEqual(
-      expect.arrayContaining(["job_created", "terms_accepted", "funded", "submission_received", "submitted_onchain", "ai_verdict", "released"]),
+      expect.arrayContaining(["job_created", "terms_accepted", "funded", "submission_received", "submitted_onchain", "ai_verdict", "proposed", "released"]),
     )
 
     // The AI saw the agreed terms and the structured submission.
@@ -138,41 +172,197 @@ describe("auto-release path", () => {
     expect(input.job.acceptance_criteria).toEqual(criteria)
     expect(input.submission.deliverable_url).toBe(submission.deliverableUrl)
   })
+
+  it("a confident dispute verdict proposes a refund; any participant can finalize after the window", async () => {
+    const w = await world()
+    const job = await fundedJob(w)
+    w.ai.queue.push(confidentFail)
+    const r = await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
+    expect(r.body.verification.decision).toBe("refund")
+    expect((await detailOf(w, job)).arbitration.canChallenge).toBe("freelancer")
+    w.clock.advance(180)
+    const f = await w.client.post(`/api/jobs/${job.id}/finalize`)
+    expect(f.status, JSON.stringify(f.body)).toBe(200)
+    expect(f.body.job.status).toBe("refunded")
+    expect(onchain(w, job).state).toBe("Refunded")
+  })
+
+  it("someone finalizing directly on-chain is picked up by the keeper", async () => {
+    const w = await world()
+    const job = await fundedJob(w)
+    w.ai.queue.push(releaseVerdict)
+    await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
+    w.clock.advance(180)
+    w.chain.finalizeDirect(job.onchainJobId)
+    await w.keeper.tick()
+    expect((await detailOf(w, job)).job.status).toBe("released")
+  })
 })
 
-describe("dispute path", () => {
-  it("low confidence → escrow.dispute → admin resolves with refund", async () => {
+describe("challenge → arguments → AI jury", () => {
+  async function proposed(w: Awaited<ReturnType<typeof world>>, verdict: VerdictResult = releaseVerdict) {
+    const job = await fundedJob(w)
+    w.ai.queue.push(verdict)
+    await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
+    return job
+  }
+
+  it("the losing party challenges with a bond, both argue, the jury overturns and the bond is returned", async () => {
+    const w = await world()
+    const job = await proposed(w)
+
+    // The winning side can't challenge, and nobody can claim a challenge that isn't on-chain.
+    expect((await w.freelancer.post(`/api/jobs/${job.id}/challenge`, {})).status).toBe(403)
+    expect((await w.client.post(`/api/jobs/${job.id}/challenge`, {})).status).toBe(409)
+
+    const txHash = w.chain.challenge(job.onchainJobId, w.client.account.address)
+    const c = await w.client.post(`/api/jobs/${job.id}/challenge`, { txHash, argument: "The Lighthouse score was never evidenced; the README only claims it." })
+    expect(c.status, JSON.stringify(c.body)).toBe(200)
+    expect(c.body.job.status).toBe("challenged")
+    expect(c.body.job.challenge).toMatchObject({ source: "party", challengerRole: "client", bondUsdc: "25.00" })
+    expect(c.body.job.challenge.arguments.client).toMatch(/Lighthouse/)
+    expect((await w.client.post(`/api/jobs/${job.id}/arguments`, { argument: "Arguing a second time should not be allowed." })).status).toBe(409)
+    expect((await w.stranger.post(`/api/jobs/${job.id}/arguments`, { argument: "I am not part of this job at all." })).status).toBe(404)
+
+    // The second argument completes the round and convenes the jury immediately.
+    w.jury.queue.push(["refund", "refund", "release"])
+    const a = await w.freelancer.post(`/api/jobs/${job.id}/arguments`, { argument: "The README links the Lighthouse report generated in CI." })
+    expect(a.status, JSON.stringify(a.body)).toBe(200)
+    expect(a.body.job.status).toBe("refunded")
+    expect(onchain(w, job).state).toBe("Refunded")
+
+    const juryInput = w.jury.calls[0] as any
+    expect(juryInput.challenged_by).toBe("client")
+    expect(juryInput.first_verdict.proposed_outcome).toBe("release")
+    expect(juryInput.arguments.freelancer).toMatch(/CI/)
+    expect(juryInput.evidence.content_excerpt).toBe("<fixture page content>") // same record the first verdict saw
+
+    const detail = await detailOf(w, job)
+    const ruling = detail.rulings[0]
+    expect(ruling).toMatchObject({ status: "completed", outcome: "refund", tally: { release: 1, refund: 2, abstain: 0, failed: 0 } })
+    expect(onchain(w, job).rulingHash).toBe(ruling.commitment.hash)
+    expect(keccak256(stringToHex(ruling.commitment.canonical))).toBe(ruling.commitment.hash)
+    expect(detail.events.find((e: any) => e.type === "refunded").message).toMatch(/bond was returned/)
+  })
+
+  it("the jury upholds the proposal: the challenger's bond goes to the other side", async () => {
+    const w = await world()
+    const job = await proposed(w)
+    w.chain.challenge(job.onchainJobId, w.client.account.address)
+    await w.client.post(`/api/jobs/${job.id}/challenge`, {})
+    w.jury.queue.push(["release", "release", "refund"])
+    w.clock.advance(121) // argument window closes without the freelancer's argument
+    await w.keeper.tick()
+    expect(onchain(w, job).state).toBe("Released")
+    const detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("released")
+    expect(detail.events.find((e: any) => e.type === "released").message).toMatch(/bond went to the freelancer/)
+  })
+
+  it("a challenge made directly on-chain is noticed by the keeper and never finalized", async () => {
+    const w = await world()
+    const job = await proposed(w)
+    w.chain.challenge(job.onchainJobId, w.client.account.address)
+    w.clock.advance(180) // past the proposal deadline and the backend's own-action grace
+    await w.keeper.tick()
+    const detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("challenged")
+    expect(detail.job.challenge.challengerRole).toBe("client")
+    expect(onchain(w, job).state).toBe("Challenged")
+  })
+
+  it("an unsure AI escalates straight to the jury without a bond", async () => {
     const w = await world()
     const job = await fundedJob(w)
     w.ai.queue.push(lowConfidence)
     const r = await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
-    expect(r.body.verification).toMatchObject({ ok: true, decision: "dispute" })
-    expect(w.chain.jobs.get(job.onchainJobId)!.state).toBe("Disputed")
+    expect(r.body.verification).toMatchObject({ ok: true, decision: "escalate" })
+    expect(onchain(w, job).state).toBe("Challenged")
+    let detail = await detailOf(w, job)
+    expect(detail.job.challenge).toMatchObject({ source: "ai_uncertain", bondUnits: "0" })
+    expect(detail.verifications[0].decisionReason).toMatch(/below the 0.85/)
 
-    const detail = (await w.freelancer.get(`/api/jobs/${job.id}`)).body
-    expect(detail.job.status).toBe("disputed")
-    expect(detail.job.dispute.reason).toMatch(/below the 0.85/)
-    expect(detail.verifications[0].result.reasoning).toBeTruthy()
-
-    // Participants cannot resolve; admin can.
-    expect((await w.client.post(`/api/admin/jobs/${job.id}/resolve`, { outcome: "refund", notes: "Client wins the dispute." })).status).toBe(403)
-    const disputes = (await w.admin.get("/api/admin/jobs?status=disputed")).body.jobs
-    expect(disputes.map((j: any) => j.id)).toContain(job.id)
-    const res = await w.admin.post(`/api/admin/jobs/${job.id}/resolve`, { outcome: "refund", notes: "Performance criterion not evidenced." })
-    expect(res.status, JSON.stringify(res.body)).toBe(200)
-    expect(res.body.job.status).toBe("resolved_refund")
-    expect(res.body.job.resolution.adminEmail).toBe("admin@example.com")
-    expect(w.chain.jobs.get(job.onchainJobId)!.state).toBe("ResolvedRefund")
+    w.jury.queue.push(["release", "release", "release"])
+    await w.freelancer.post(`/api/jobs/${job.id}/arguments`, { argument: "Here is the deployed site and the CI Lighthouse report." })
+    await w.client.post(`/api/jobs/${job.id}/arguments`, { argument: "I have no objection if the report is genuine." })
+    detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("released")
+    expect(detail.events.find((e: any) => e.type === "released").message).not.toMatch(/bond/)
   })
 
-  it("model says release but omits a criterion → dispute (never trust a bare release)", async () => {
+  it("model says release but omits a criterion → escalate (never trust a bare release)", async () => {
     const w = await world()
     const job = await fundedJob(w)
     w.ai.queue.push({ ...releaseVerdict, matched_criteria: criteria.slice(0, 2) })
     const r = await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
-    expect(r.body.verification.decision).toBe("dispute")
+    expect(r.body.verification.decision).toBe("escalate")
   })
 
+  it("a split jury goes to a human admin, whose decision is committed on-chain and settles the bond", async () => {
+    const w = await world()
+    const job = await proposed(w, confidentFail) // refund proposed; the freelancer challenges
+    w.chain.challenge(job.onchainJobId, w.freelancer.account.address)
+    await w.freelancer.post(`/api/jobs/${job.id}/challenge`, { argument: "Every criterion is visible on the live page; please look again." })
+    w.jury.queue.push(["release", "refund", "abstain"])
+    await w.client.post(`/api/jobs/${job.id}/arguments`, { argument: "The contact form does not post anywhere." })
+    let detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("disputed")
+    expect(detail.job.dispute.source).toBe("jury")
+    expect(onchain(w, job).state).toBe("Disputed")
+
+    expect((await w.client.post(`/api/admin/jobs/${job.id}/resolve`, { outcome: "refund", notes: "Client wins the dispute." })).status).toBe(403)
+    const res = await w.admin.post(`/api/admin/jobs/${job.id}/resolve`, { outcome: "release", notes: "The form posts to /api/contact as agreed." })
+    expect(res.status, JSON.stringify(res.body)).toBe(200)
+    expect(res.body.job.status).toBe("resolved_release")
+    expect(onchain(w, job).state).toBe("ResolvedRelease")
+    expect(onchain(w, job).rulingHash).toBe(res.body.job.resolution.rulingHash)
+    detail = await detailOf(w, job)
+    expect(detail.events.find((e: any) => e.type === "resolved").message).toMatch(/bond was returned/)
+  })
+
+  it("jury outage: nothing is decided, admin can take over, and retry reconvenes", async () => {
+    const w = await world()
+    const job = await proposed(w)
+    w.chain.challenge(job.onchainJobId, w.client.account.address)
+    await w.client.post(`/api/jobs/${job.id}/challenge`, {})
+    w.jury.queue.push([null, null, null])
+    w.clock.advance(121)
+    await w.keeper.tick()
+    let detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("challenged")
+    expect(detail.job.jury.state).toBe("error")
+    expect(detail.rulings[0]).toMatchObject({ status: "error", outcome: null })
+    expect((await w.admin.get("/api/admin/overview")).body.attention).toContain(job.id)
+
+    // A single failed juror can never produce a majority on its own.
+    w.jury.queue.push(["release", null, "refund"])
+    const retry = await w.client.post(`/api/jobs/${job.id}/verify`)
+    expect(retry.body.verification).toMatchObject({ ok: true, outcome: "split" })
+    detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("disputed")
+  })
+
+  it("chain failure after a ruling: retry re-sends the tx without reconvening the jury", async () => {
+    const w = await world()
+    const job = await proposed(w)
+    w.chain.challenge(job.onchainJobId, w.client.account.address)
+    await w.client.post(`/api/jobs/${job.id}/challenge`, {})
+    w.jury.queue.push(["refund", "refund", "refund"])
+    w.chain.failNext.action = "resolveChallenge"
+    w.clock.advance(121)
+    await w.keeper.tick()
+    let detail = await detailOf(w, job)
+    expect(detail.job.pendingRuling).toBe("refund")
+    expect(detail.job.lastChainAction.state).toBe("failed")
+    const calls = w.jury.calls.length
+    expect((await w.admin.post(`/api/admin/jobs/${job.id}/verify`)).status).toBe(200)
+    expect(w.jury.calls.length).toBe(calls)
+    detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("refunded")
+  })
+})
+
+describe("human review", () => {
   it("client non-delivery dispute from Funded → admin resolves with release", async () => {
     const w = await world()
     const job = await fundedJob(w)
@@ -180,9 +370,25 @@ describe("dispute path", () => {
     const d = await w.client.post(`/api/jobs/${job.id}/dispute`, { reason: "Freelancer has not delivered anything." })
     expect(d.status).toBe(200)
     expect(d.body.job.dispute.source).toBe("client")
+    const disputes = (await w.admin.get("/api/admin/jobs?status=disputed")).body.jobs
+    expect(disputes.map((j: any) => j.id)).toContain(job.id)
     const res = await w.admin.post(`/api/admin/jobs/${job.id}/resolve`, { outcome: "release", notes: "Work was delivered off-platform." })
     expect(res.body.job.status).toBe("resolved_release")
-    expect(w.chain.jobs.get(job.onchainJobId)!.state).toBe("ResolvedRelease")
+    expect(res.body.job.resolution.adminEmail).toBe("admin@example.com")
+    expect(onchain(w, job).state).toBe("ResolvedRelease")
+  })
+
+  it("a dead relayer can't strand funds: anyone escalates after the timeout and the keeper syncs it", async () => {
+    const w = await world()
+    const job = await fundedJob(w)
+    w.ai.queue.push(new Error("groq 503"))
+    await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission) // stuck in Submitted
+    w.clock.advance(3600)
+    w.chain.escalateStale(job.onchainJobId)
+    await w.keeper.tick()
+    const detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("disputed")
+    expect(detail.job.dispute.source).toBe("timeout")
   })
 })
 
@@ -196,24 +402,24 @@ describe("failure surfacing", () => {
     expect(r.body.verification).toMatchObject({ ok: false, stage: "ai" })
     expect(r.body.verification.error).toMatch(/429/)
 
-    let detail = (await w.client.get(`/api/jobs/${job.id}`)).body
-    expect(detail.job.status).toBe("submitted") // funds stay locked; nothing released or disputed
+    let detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("submitted") // funds stay locked; nothing proposed
     expect(detail.job.verification.state).toBe("error")
-    expect(detail.verifications[0]).toMatchObject({ status: "error", result: null, decision: null })
-    expect(w.chain.jobs.get(job.onchainJobId)!.state).toBe("Submitted")
+    expect(detail.verifications[0]).toMatchObject({ status: "error", result: null, decision: null, commitment: null })
+    expect(onchain(w, job).state).toBe("Submitted")
 
     w.ai.queue.push(releaseVerdict)
     const retry = await w.freelancer.post(`/api/jobs/${job.id}/verify`)
     expect(retry.status).toBe(200)
-    detail = (await w.client.get(`/api/jobs/${job.id}`)).body
-    expect(detail.job.status).toBe("released")
+    detail = await detailOf(w, job)
+    expect(detail.job.status).toBe("proposed")
   })
 
   it("chain failure after a verdict: retry re-sends the tx without re-asking the AI", async () => {
     const w = await world()
     const job = await fundedJob(w)
     w.ai.queue.push(releaseVerdict)
-    w.chain.failNext.action = "release"
+    w.chain.failNext.action = "proposeVerdict"
     const r = await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
     expect(r.body.verification).toMatchObject({ ok: false, stage: "chain" })
     expect(r.body.verification.error).toMatch(/RPC timeout/)
@@ -227,7 +433,7 @@ describe("failure surfacing", () => {
     expect(retry.status).toBe(200)
     expect(w.ai.calls.length).toBe(callsBefore)
     detail = (await w.admin.get(`/api/admin/jobs/${job.id}`)).body
-    expect(detail.job.status).toBe("released")
+    expect(detail.job.status).toBe("proposed")
   })
 
   it("markSubmitted failure keeps the job funded so the freelancer can resubmit", async () => {
@@ -237,7 +443,7 @@ describe("failure surfacing", () => {
     const r = await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
     expect(r.status).toBe(502)
     expect(r.body.error.code).toBe("chain_error")
-    expect((await w.client.get(`/api/jobs/${job.id}`)).body.job.status).toBe("funded")
+    expect((await detailOf(w, job)).job.status).toBe("funded")
     w.ai.queue.push(releaseVerdict)
     expect((await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)).status).toBe(201)
   })
@@ -254,6 +460,8 @@ describe("complaints & reviews path", () => {
 
     w.ai.queue.push(releaseVerdict)
     await w.freelancer.post(`/api/jobs/${job.id}/submissions`, submission)
+    w.clock.advance(180)
+    await w.keeper.tick()
 
     const rv = await w.client.post(`/api/jobs/${job.id}/reviews`, { rating: 2, comment: "Delivered but communication was poor, contains rude words." })
     expect(rv.status).toBe(201)
