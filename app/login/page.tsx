@@ -9,11 +9,13 @@ import {
   updateProfile,
 } from "firebase/auth"
 import Link from "next/link"
+import { CheckCircle2 } from "lucide-react"
+import { IsoBlocks } from "@/components/app/connect-wallet-dialog"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Suspense, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { useAuth } from "@/components/auth-provider"
-import { YorseMark } from "@/components/yorse-logo"
+import { YorseLogo, YorseMark } from "@/components/yorse-logo"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -77,8 +79,33 @@ function LoginForm() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
+    <div className="grid min-h-screen bg-yorse-wash lg:grid-cols-[1fr_1.1fr]">
+      <aside className="relative hidden overflow-hidden bg-yorse-forest p-12 text-white lg:flex lg:flex-col">
+        <Link href="/">
+          <YorseLogo tone="dark" />
+        </Link>
+        <div className="mt-auto max-w-md">
+          <h2 className="font-brand text-4xl font-bold leading-tight">
+            Work gets done.
+            <br />
+            <span className="text-emerald-300">Money moves.</span>
+          </h2>
+          <ul className="mt-6 space-y-3 text-sm text-emerald-50/80">
+            {[
+              "USDC escrow on Arbitrum Sepolia",
+              "AI checks the real deliverable against your terms",
+              "Any verdict can be appealed to an AI jury",
+            ].map((t) => (
+              <li key={t} className="flex items-center gap-2.5">
+                <CheckCircle2 className="size-4 text-emerald-300" /> {t}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <IsoBlocks className="absolute -right-10 top-24 w-72 opacity-80" />
+      </aside>
+      <div className="flex items-center justify-center p-4">
+      <Card className="w-full max-w-md shadow-float">
         <CardHeader className="items-center text-center">
           <Link href="/" className="mx-auto mb-2">
             <YorseMark className="size-12" />
@@ -154,6 +181,7 @@ function LoginForm() {
           </Button>
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }
