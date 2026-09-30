@@ -18,7 +18,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, errorText } from "@/lib/api"
 import type { Complaint, Job, JobStatus, Review } from "@/lib/types"
 
-const ALL_STATUSES: JobStatus[] = ["open", "pending_acceptance", "awaiting_funding", "funded", "submitted", "disputed", "released", "resolved_release", "resolved_refund", "declined", "cancelled"]
+const ALL_STATUSES: JobStatus[] = [
+  "open",
+  "pending_acceptance",
+  "awaiting_funding",
+  "funded",
+  "submitted",
+  "proposed",
+  "challenged",
+  "disputed",
+  "released",
+  "refunded",
+  "resolved_release",
+  "resolved_refund",
+  "declined",
+  "cancelled",
+]
 
 export default function AdminPage() {
   return (
