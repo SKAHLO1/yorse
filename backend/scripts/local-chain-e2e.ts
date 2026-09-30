@@ -1,23 +1,26 @@
 /**
  * Local end-to-end run against the REAL Escrow contract and REAL Circle USDC on a forked
  * Arbitrum Sepolia (anvil). Needs no keys. Verifies the backend <-> chain wiring:
- * fund (client wallet) -> submit -> markSubmitted -> AI decision -> release/dispute -> admin resolve.
+ * fund (client wallet) -> submit -> markSubmitted -> AI proposal -> challenge window (time warp)
+ * -> finalize / bonded challenge -> AI jury ruling -> admin resolve.
  *
- * Only the AI verdicts are scripted here (no API keys offline); scripts/ai-eval.ts and
- * scripts/e2e.ts exercise the real Groq/Gemini + Firebase once keys are configured.
+ * This is a regression harness, not the live check: AI verdicts and jury votes are scripted.
+ * The live checks are Smoke.s.sol (contract on Arbitrum Sepolia), scripts/jury-eval.ts (real
+ * models) and scripts/e2e.ts / the UI (everything together).
  *
  *   anvil --fork-url https://sepolia-rollup.arbitrum.io/rpc --port 8546
  *   pnpm tsx scripts/local-chain-e2e.ts
  */
 import { readFileSync } from "node:fs"
-import { createPublicClient, createTestClient, createWalletClient, erc20Abi, http, parseUnits, type Hex } from "viem"
+import { createPublicClient, createTestClient, createWalletClient, erc20Abi, http, parseUnits, type Address, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { arbitrumSepolia } from "viem/chains"
 import { createApp } from "../src/app"
 import { CIRCLE_USDC, createEscrowChain } from "../src/chain/escrow"
 import { escrowAbi } from "../src/chain/escrowAbi"
+import { createKeeper } from "../src/services/keeper"
 import { createMemoryStore } from "../src/store/memory"
-import { fakeAuth, noEvidence, scriptedAi } from "../test/helpers"
+import { fakeAuth, noEvidence, scriptedAi, scriptedJury } from "../test/helpers"
 import request from "supertest"
 
 const RPC = process.env.LOCAL_RPC ?? "http://127.0.0.1:8546"
@@ -50,6 +53,9 @@ async function mintUsdc(to: Hex, amount: bigint) {
   await pub.waitForTransactionReceipt({ hash: await wallet(RELAYER).writeContract({ address: CIRCLE_USDC, abi: minterAbi, functionName: "mint", args: [to, amount] }) })
 }
 
+const WINDOW = 180n
+const usdcOf = (a: Address) => pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [a] })
+
 async function main() {
   console.log(`Local chain e2e against ${RPC}`)
   assert((await pub.getChainId()) === 421614, "anvil must fork Arbitrum Sepolia (chain 421614)")
@@ -57,13 +63,14 @@ async function main() {
 
   // Deploy the real Escrow bytecode compiled by forge.
   const artifact = JSON.parse(readFileSync(new URL("../../contracts/out/Escrow.sol/Escrow.json", import.meta.url), "utf8"))
-  const deployHash = await wallet(RELAYER).deployContract({ abi: escrowAbi, bytecode: artifact.bytecode.object, args: [CIRCLE_USDC, RELAYER.address, RELAYER.address] })
+  const deployHash = await wallet(RELAYER).deployContract({ abi: escrowAbi, bytecode: artifact.bytecode.object, args: [CIRCLE_USDC, RELAYER.address, RELAYER.address, WINDOW, 3600n, 1000] })
   const escrowAddress = (await pub.waitForTransactionReceipt({ hash: deployHash })).contractAddress!
   ok(`Escrow deployed at ${escrowAddress}`)
 
   await mintUsdc(CLIENT.address, parseUnits("1000", 6))
-  const startFreelancer = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [FREELANCER.address] })
-  const startClient = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [CLIENT.address] })
+  await mintUsdc(FREELANCER.address, parseUnits("10", 6)) // enough for a challenge bond
+  const startFreelancer = await usdcOf(FREELANCER.address)
+  const startClient = await usdcOf(CLIENT.address)
   ok(`client holds ${startClient / 1_000_000n} USDC (minted in fork)`)
 
   const chain = await createEscrowChain({ rpcUrl: RPC, relayerPrivateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", escrowAddress })
@@ -71,7 +78,19 @@ async function main() {
 
   const auth = fakeAuth()
   const ai = scriptedAi()
-  const app = createApp({ store: createMemoryStore(), chain, ai, auth, fetchEvidence: noEvidence, corsOrigins: [] })
+  const criteria = ["README documents setup steps", "Includes unit tests"]
+  const jury = scriptedJury(() => criteria)
+  const store = createMemoryStore()
+  // Backend time follows the fork's block time, so warping the chain also moves the backend's clock.
+  let chainNow = Number((await pub.getBlock()).timestamp) * 1000
+  const now = () => new Date(chainNow)
+  const warp = async (seconds: bigint) => {
+    await test.increaseTime({ seconds: Number(seconds) })
+    await test.mine({ blocks: 1 })
+    chainNow = Number((await pub.getBlock()).timestamp) * 1000
+  }
+  const app = createApp({ store, chain, ai, jury, auth, fetchEvidence: noEvidence, argumentWindowSeconds: 60, now, corsOrigins: [] })
+  const keeper = createKeeper({ store, jobs: app.jobs, intervalMs: 1e9, now, log: (m) => console.log(`    keeper: ${m}`) })
   const agent = (uid: string, acct: typeof RELAYER | null, admin = false) => {
     const h = { authorization: `Bearer ${auth.add({ uid, email: `${uid}@local.test`, name: uid, picture: null, admin })}` }
     return {
@@ -90,13 +109,12 @@ async function main() {
   }
   ok("client and freelancer linked wallets by signature")
 
-  const criteria = ["README documents setup steps", "Includes unit tests"]
   const createAndFund = async (amount: string) => {
     const c = await client.post("/api/jobs", {
       title: `Local e2e ${amount}`,
       deliverableDescription: "A small TypeScript library with documentation and tests.",
       acceptanceCriteria: criteria,
-      dueDate: new Date(Date.now() + 86400_000 * 3).toISOString(),
+      dueDate: new Date(chainNow + 86400_000 * 3).toISOString(),
       amountUsdc: amount,
       freelancerEmail: "freelancer@local.test",
     })
@@ -116,28 +134,62 @@ async function main() {
   const submit = (id: string) =>
     freelancer.post(`/api/jobs/${id}/submissions`, { deliverableUrl: "https://example.com/repo", description: "Library with README setup section and a vitest suite." })
 
-  // --- Path 1: auto-release
-  console.log("\nPath 1: auto-release")
+  // --- Path 1: proposal -> window passes -> keeper finalizes
+  console.log("\nPath 1: AI proposal → unchallenged → finalize")
   const j1 = await createAndFund("12.5")
   ok(`job funded on-chain: ${await onchainState(j1.onchainJobId)}`)
   ai.queue.push({ verdict: "release", confidence: 0.95, matched_criteria: criteria, unmatched_criteria: [], reasoning: "README has a Setup section and tests/ contains a vitest suite with 12 tests." })
   const s1 = await submit(j1.id)
   assert(s1.body.verification?.ok && s1.body.verification.decision === "release", JSON.stringify(s1.body))
+  const oc1 = await chain.getJob(j1.onchainJobId)
+  assert(oc1.state === "Proposed" && oc1.proposed === "Release", `expected Proposed(Release), got ${oc1.state}`)
+  const d1 = (await client.get(`/api/jobs/${j1.id}`)).body
+  assert(oc1.deliverableHash === d1.submissions[0].commitment.hash, "deliverable hash on-chain matches the stored submission")
+  assert(oc1.verdictHash === d1.verifications[0].commitment.hash, "verdict hash on-chain matches the stored verdict")
+  ok("AI verdict posted as proposal; deliverable + verdict hashes committed on-chain")
+  await keeper.tick()
+  assert((await onchainState(j1.onchainJobId)) === "Proposed", "keeper must not finalize inside the window")
+  await warp(WINDOW)
+  await keeper.tick()
   assert((await onchainState(j1.onchainJobId)) === "Released", "expected Released")
-  ok(`AI release → escrow.release() tx ${s1.body.verification.txHash.slice(0, 12)}… → on-chain Released`)
+  ok("window passed → keeper called finalize() → on-chain Released")
 
-  // --- Path 2: AI dispute -> admin refund
-  console.log("\nPath 2: dispute → admin refund")
+  // --- Path 2: refund proposal -> freelancer challenges with a real bond -> jury refunds -> bond to client
+  console.log("\nPath 2: refund proposal → bonded challenge → AI jury")
   const j2 = await createAndFund("7")
   ai.queue.push({ verdict: "dispute", confidence: 0.9, matched_criteria: ["README documents setup steps"], unmatched_criteria: ["Includes unit tests"], reasoning: "The repository tree has no test files or test runner configuration." })
   const s2 = await submit(j2.id)
-  assert(s2.body.verification?.decision === "dispute", JSON.stringify(s2.body))
-  assert((await onchainState(j2.onchainJobId)) === "Disputed", "expected Disputed")
-  ok("AI dispute → escrow.dispute() → on-chain Disputed")
-  const r2 = await admin.post(`/api/admin/jobs/${j2.id}/resolve`, { outcome: "refund", notes: "No tests were delivered; refunding client." })
+  assert(s2.body.verification?.decision === "refund", JSON.stringify(s2.body))
+  const bond = (await freelancer.get(`/api/jobs/${j2.id}`)).body.arbitration.bond
+  assert(bond.display === "0.70", `bond is 10%: ${JSON.stringify(bond)}`)
+  const fw = wallet(FREELANCER)
+  await pub.waitForTransactionReceipt({ hash: await fw.writeContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "approve", args: [escrowAddress, BigInt(bond.units)] }) })
+  const challengeTx = await fw.writeContract({ address: escrowAddress, abi: escrowAbi, functionName: "challenge", args: [j2.onchainJobId] })
+  const c2 = await freelancer.post(`/api/jobs/${j2.id}/challenge`, { txHash: challengeTx, argument: "The tests live in a separate folder the reviewer may have missed." })
+  assert(c2.status === 200 && c2.body.job.status === "challenged", JSON.stringify(c2.body))
+  ok(`freelancer challenged on-chain with a ${bond.display} USDC bond`)
+  jury.queue.push(["refund", "refund", "release"])
+  const a2 = await client.post(`/api/jobs/${j2.id}/arguments`, { argument: "There is no test runner configured anywhere in the repo." })
+  assert(a2.status === 200 && a2.body.job.status === "refunded", JSON.stringify(a2.body))
+  const oc2 = await chain.getJob(j2.onchainJobId)
+  const ruling2 = (await client.get(`/api/jobs/${j2.id}`)).body.rulings[0]
+  assert(oc2.state === "Refunded" && oc2.rulingHash === ruling2.commitment.hash, "jury ruling committed and applied")
+  ok("jury 2–1 for refund → resolveChallenge() → on-chain Refunded; ruling hash committed")
+
+  // --- Path 2b: unsure AI -> escalate -> jury split -> admin
+  console.log("\nPath 2b: unsure AI → jury split → admin")
+  const j2b = await createAndFund("1")
+  ai.queue.push({ verdict: "release", confidence: 0.6, matched_criteria: criteria, unmatched_criteria: [], reasoning: "The README mentions tests but the test folder could not be inspected." })
+  const s2b = await submit(j2b.id)
+  assert(s2b.body.verification?.decision === "escalate" && (await onchainState(j2b.onchainJobId)) === "Challenged", JSON.stringify(s2b.body))
+  jury.queue.push(["release", "refund", "abstain"])
+  await warp(61n)
+  await keeper.tick()
+  assert((await onchainState(j2b.onchainJobId)) === "Disputed", "split jury goes to Disputed")
+  const r2 = await admin.post(`/api/admin/jobs/${j2b.id}/resolve`, { outcome: "refund", notes: "No tests were delivered; refunding client." })
   assert(r2.status === 200, JSON.stringify(r2.body))
-  assert((await onchainState(j2.onchainJobId)) === "ResolvedRefund", "expected ResolvedRefund")
-  ok("admin resolve(refund) → escrow.refund() → on-chain ResolvedRefund")
+  assert((await onchainState(j2b.onchainJobId)) === "ResolvedRefund", "expected ResolvedRefund")
+  ok("escalate() → jury split → dispute() → admin resolve(refund) → on-chain ResolvedRefund")
 
   // --- Path 3: non-delivery dispute from Funded -> admin release
   console.log("\nPath 3: non-delivery dispute from Funded → admin release")
@@ -155,7 +207,7 @@ async function main() {
     title: "Public listing e2e",
     deliverableDescription: "A small TypeScript library with documentation and tests, open to applications.",
     acceptanceCriteria: criteria,
-    dueDate: new Date(Date.now() + 86400_000 * 3).toISOString(),
+    dueDate: new Date(chainNow + 86400_000 * 3).toISOString(),
     amountUsdc: "2",
     visibility: "public",
   })
@@ -190,6 +242,9 @@ async function main() {
   ai.queue.push({ verdict: "release", confidence: 0.96, matched_criteria: criteria, unmatched_criteria: [], reasoning: "README documents setup and the repository contains a passing unit test suite." })
   const s5 = await submit(openJob.id)
   assert(s5.body.verification?.decision === "release", JSON.stringify(s5.body))
+  await warp(WINDOW)
+  const fin5 = await freelancer.post(`/api/jobs/${openJob.id}/finalize`)
+  assert(fin5.status === 200, JSON.stringify(fin5.body))
   assert((await onchainState(openJob.onchainJobId)) === "Released", "expected Released")
   ok("public job funded, verified and released on-chain")
 
@@ -213,14 +268,15 @@ async function main() {
   ok("review + complaint filed and visible to admin")
 
   // --- Balances
-  const endFreelancer = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [FREELANCER.address] })
-  const endClient = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [CLIENT.address] })
-  const escrowBal = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [escrowAddress] })
-  // 12.5 + 3 (admin release) + 2 (public listing) paid out; 7 refunded to the client.
-  assert(endFreelancer - startFreelancer === parseUnits("17.5", 6), `freelancer +17.5 USDC, got ${endFreelancer - startFreelancer}`)
-  assert(startClient - endClient === parseUnits("17.5", 6), `client -17.5 USDC net, got ${startClient - endClient}`)
+  const endFreelancer = await usdcOf(FREELANCER.address)
+  const endClient = await usdcOf(CLIENT.address)
+  const escrowBal = await usdcOf(escrowAddress)
+  // Paid out: 12.5 + 3 (admin release) + 2 (public listing) = 17.5. Refunded: 7 and 1.
+  // The freelancer's losing 0.70 bond went to the client.
+  assert(endFreelancer - startFreelancer === parseUnits("16.8", 6), `freelancer +16.80 USDC, got ${endFreelancer - startFreelancer}`)
+  assert(startClient - endClient === parseUnits("16.8", 6), `client -16.80 USDC net, got ${startClient - endClient}`)
   assert(escrowBal === 0n, "escrow drained")
-  ok("balances: freelancer +17.50 USDC, client -17.50 USDC net (7.00 refunded), escrow 0")
+  ok("balances: freelancer +16.80 USDC (17.50 paid − 0.70 lost bond), client −16.80 net, escrow 0")
 
   console.log("\nAll local chain e2e paths passed.")
 }
