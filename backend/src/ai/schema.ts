@@ -1,3 +1,4 @@
+import type { ImagePart } from "./providers"
 import { z } from "zod"
 
 /** The strict verdict contract every provider must satisfy. Anything else is treated as a provider failure. */
@@ -48,6 +49,8 @@ export interface VerificationInput {
     note: string | null
     content_excerpt: string | null
   }
+  /** Screenshots of the deliverable, sent to vision-capable models alongside the text. */
+  images?: ImagePart[]
 }
 
 export function parseVerdict(raw: string): VerdictResult {
