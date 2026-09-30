@@ -11,7 +11,10 @@
     "ai:eval": "tsx --env-file-if-exists=.env scripts/ai-eval.ts",
     "set-admin": "tsx --env-file-if-exists=.env scripts/set-admin.ts",
     "e2e": "tsx --env-file-if-exists=.env scripts/e2e.ts",
-    "e2e:local": "tsx scripts/local-chain-e2e.ts"
+    "e2e:local": "tsx scripts/local-chain-e2e.ts",
+    "jury:eval": "tsx --env-file-if-exists=.env scripts/jury-eval.ts",
+    "vision:eval": "tsx --env-file-if-exists=.env scripts/vision-eval.ts",
+    "agent": "tsx --env-file-if-exists=.env scripts/demo-agent.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
@@ -19,9 +22,10 @@
     "express-rate-limit": "^8.7.0",
     "firebase-admin": "^14.4.0",
     "helmet": "^8.3.0",
+    "playwright": "1.63.0",
+    "tsx": "^4.23.13",
     "viem": "^2.56.8",
-    "zod": "^4.6.5",
-    "tsx": "^4.23.13"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
