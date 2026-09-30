@@ -1,12 +1,18 @@
 import { lookup } from "node:dns/promises"
 import { isIP } from "node:net"
+import { renderPage, type Screenshot } from "./browser"
 import type { VerificationInput } from "./schema"
 
 const MAX_BYTES = 300_000
 const MAX_CHARS = 14_000
 const TIMEOUT_MS = 12_000
 
-export type EvidenceFetcher = (url: string | null) => Promise<VerificationInput["evidence"]>
+/** A host refused us for quota reasons; the message says how to fix it rather than implying the link is bad. */
+export class RateLimitError extends Error {}
+
+/** Text evidence for every model, plus screenshots for vision models when the page could be rendered. */
+export type Evidence = VerificationInput["evidence"] & { screenshots?: Screenshot[] }
+export type EvidenceFetcher = (url: string | null) => Promise<Evidence>
 
 function isPrivateIp(ip: string): boolean {
   if (isIP(ip) === 4) {
@@ -49,7 +55,19 @@ async function fetchText(raw: string, accept = "text/html,text/plain,application
       current = new URL(res.headers.get("location")!, url).toString()
       continue
     }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      // GitHub answers 403/429 with remaining=0 when the per-IP anonymous quota is spent.
+      // Say so plainly: "not found" would send the AI (and the reader) down the wrong path.
+      const exhausted = res.headers.get("x-ratelimit-remaining") === "0"
+      if (url.hostname === "api.github.com" && (res.status === 403 || res.status === 429) && exhausted) {
+        const reset = Number(res.headers.get("x-ratelimit-reset"))
+        const mins = Number.isFinite(reset) ? Math.max(1, Math.ceil((reset * 1000 - Date.now()) / 60_000)) : null
+        throw new RateLimitError(
+          `GitHub API rate limit reached for this server's IP${mins ? ` (resets in ~${mins} min)` : ""}. Set GITHUB_TOKEN to raise it from 60 to 5000 requests/hour.`,
+        )
+      }
+      throw new Error(`HTTP ${res.status}`)
+    }
     const type = res.headers.get("content-type") ?? "unknown"
     if (!/text|json|xml|javascript|markdown/i.test(type)) throw new Error(`content type ${type} cannot be inspected as text`)
     const reader = res.body?.getReader()
@@ -110,22 +128,64 @@ async function githubEvidence(url: URL): Promise<string | null> {
   return parts.join("\n\n")
 }
 
+const browserEnabled = () => process.env.BROWSER_EVIDENCE !== "off"
+
 export const fetchEvidence: EvidenceFetcher = async (raw) => {
   if (!raw) return { status: "not_provided", source_url: null, note: "No link was submitted; only the freelancer's description is available.", content_excerpt: null }
+  let url: URL
   try {
-    const url = await assertPublicUrl(raw)
-    const gh = await githubEvidence(url)
-    if (gh) return { status: "fetched", source_url: raw, note: "Fetched GitHub repository tree and README.", content_excerpt: gh.slice(0, MAX_CHARS) }
-    const { text, type, finalUrl } = await fetchText(raw)
-    const body = /html/i.test(type) ? htmlToText(text) : text
-    const truncated = body.length > MAX_CHARS
-    return {
-      status: "fetched",
-      source_url: finalUrl,
-      note: `Fetched ${type}${truncated ? `; truncated to ${MAX_CHARS} characters` : ""}. Pages rendered by JavaScript may appear incomplete.`,
-      content_excerpt: body.slice(0, MAX_CHARS),
-    }
+    url = await assertPublicUrl(raw)
   } catch (err) {
     return { status: "failed", source_url: raw, note: `Could not fetch the submitted link: ${(err as Error).message}`, content_excerpt: null }
+  }
+  try {
+    const gh = await githubEvidence(url)
+    if (gh) return { status: "fetched", source_url: raw, note: "Fetched GitHub repository tree and README.", content_excerpt: gh.slice(0, MAX_CHARS) }
+  } catch (err) {
+    return { status: "failed", source_url: raw, note: `Could not fetch the submitted link: ${(err as Error).message}`, content_excerpt: null }
+  }
+
+  // Plain fetch first (cheap, works for text/JSON), then a real browser for anything that renders.
+  let fetched: { body: string; type: string; finalUrl: string } | null = null
+  let fetchError: string | null = null
+  try {
+    const { text, type, finalUrl } = await fetchText(raw)
+    fetched = { body: /html/i.test(type) ? htmlToText(text) : text, type, finalUrl }
+  } catch (err) {
+    fetchError = (err as Error).message
+  }
+
+  let renderError: string | null = null
+  if (browserEnabled() && (!fetched || /html/i.test(fetched.type))) {
+    try {
+      const page = await renderPage(raw, assertPublicUrl, MAX_CHARS)
+      // The rendered DOM text includes everything client-side JavaScript produced.
+      const text = page.text.length >= (fetched?.body.length ?? 0) / 2 ? page.text : fetched!.body.slice(0, MAX_CHARS)
+      return {
+        status: "fetched",
+        source_url: page.finalUrl,
+        note: `Opened in headless Chromium${page.title ? ` ("${page.title.slice(0, 80)}")` : ""}; text is the rendered page after JavaScript ran. Screenshots attached: ${page.screenshots.map((s) => `${s.label} ${s.width}x${s.height}`).join(", ")}.`,
+        content_excerpt: text,
+        screenshots: page.screenshots,
+      }
+    } catch (err) {
+      renderError = (err as Error).message
+    }
+  }
+
+  if (fetched) {
+    const truncated = fetched.body.length > MAX_CHARS
+    return {
+      status: "fetched",
+      source_url: fetched.finalUrl,
+      note: `Fetched ${fetched.type}${truncated ? `; truncated to ${MAX_CHARS} characters` : ""}.${renderError ? ` The page could not be rendered in a browser (${renderError}), so no screenshots exist and JavaScript-rendered content may be missing.` : ""}`,
+      content_excerpt: fetched.body.slice(0, MAX_CHARS),
+    }
+  }
+  return {
+    status: "failed",
+    source_url: raw,
+    note: `Could not fetch the submitted link: ${fetchError}${renderError ? `; browser render also failed: ${renderError}` : ""}`,
+    content_excerpt: null,
   }
 }
