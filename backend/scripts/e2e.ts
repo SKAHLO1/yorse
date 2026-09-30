@@ -4,16 +4,18 @@
  *
  * Requires in backend/.env (in addition to the normal backend config):
  *   FIREBASE_WEB_API_KEY     - web API key (to exchange custom tokens for ID tokens)
- *   E2E_CLIENT_PRIVATE_KEY   - testnet wallet with Arbitrum Sepolia ETH + >= 2*E2E_AMOUNT USDC
+ *   E2E_CLIENT_PRIVATE_KEY   - testnet wallet with Arbitrum Sepolia ETH + >= 3.3*E2E_AMOUNT USDC
  *   E2E_API_URL              - default http://localhost:4000
  *   E2E_AMOUNT               - default 0.10 (USDC per job)
  *
  *   pnpm dev      (in one terminal)
  *   pnpm e2e      (in another)
  *
- * Paths: auto-release, dispute -> admin refund, complaint + review -> admin moderation.
+ * Paths: AI proposal -> keeper finalize; mismatched deliverable never pays out; client posts a real
+ * bond and challenges -> real AI jury -> bond settled; complaint + review -> admin moderation.
+ * Takes ~10 minutes: it waits out the real challenge and argument windows.
  */
-import { createPublicClient, createWalletClient, erc20Abi, http, parseUnits, type Hex } from "viem"
+import { createPublicClient, createWalletClient, erc20Abi, http, keccak256, parseUnits, stringToHex, type Hex } from "viem"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
 import { arbitrumSepolia } from "viem/chains"
 import { CIRCLE_USDC } from "../src/chain/escrow"
@@ -79,7 +81,7 @@ async function main() {
   ok(`backend healthy; escrow ${escrow}; AI ${health.ai.map((p: any) => p.name).join("→")}`)
 
   const usdc = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [clientAcct.address] })
-  const need = parseUnits(AMOUNT, 6) * 2n
+  const need = (parseUnits(AMOUNT, 6) * 33n) / 10n // three jobs + one 10% bond
   assert(usdc >= need, `client wallet ${clientAcct.address} has ${usdc} USDC units; needs ${need} (faucet.circle.com)`)
 
   const stamp = Date.now()
@@ -122,39 +124,100 @@ async function main() {
     if (r) console.log(`      AI ${v.provider}:${v.model} → ${r.verdict}@${r.confidence} ; decision ${v.decision}\n      reasoning: ${r.reasoning}`)
   }
 
-  console.log("\nPath 1: auto-release (real deliverable)")
-  const j1 = await createAndFund(`E2E auto-release ${stamp}`)
+  /** Polls until the job leaves the given statuses (the backend keeper drives time-based steps). */
+  async function waitWhile(jobId: string, statuses: string[], timeoutMs: number) {
+    const until = Date.now() + timeoutMs
+    for (;;) {
+      const d = (await client.get(`/api/jobs/${jobId}`)).body
+      if (!statuses.includes(d.job.status)) return d
+      if (Date.now() > until) throw new Error(`job ${jobId} still ${d.job.status} after ${timeoutMs / 1000}s`)
+      await new Promise((r) => setTimeout(r, 5000))
+    }
+  }
+  /** Every commitment the backend stored must hash to exactly what the contract holds. */
+  function checkCommitments(d: any) {
+    const oc = d.onchain
+    const sub = d.submissions.find((x: any) => x.id === d.job.currentSubmissionId)
+    const ver = d.verifications.find((x: any) => x.id === d.job.verification.verificationId)
+    assert(keccak256(stringToHex(sub.commitment.canonical)) === oc.deliverableHash, "deliverable hash on-chain matches the stored record")
+    assert(keccak256(stringToHex(ver.commitment.canonical)) === oc.verdictHash, "verdict hash on-chain matches the stored record")
+    const ruling = d.rulings.find((x: any) => x.id === d.job.jury.rulingId && x.commitment)
+    if (ruling) assert(keccak256(stringToHex(ruling.commitment.canonical)) === oc.rulingHash, "ruling hash on-chain matches the stored record")
+    return !!ruling
+  }
+  const windowMs = (health.chain.arbitration.challengeWindowSeconds + 90) * 1000
+  const argsMs = 5 * 60_000
+
+  console.log("\nPath 1: real deliverable → AI proposal → unchallenged → keeper finalizes")
+  const j1 = await createAndFund(`E2E optimistic ${stamp}`)
   const s1 = await freelancer.post(`/api/jobs/${j1.id}/submissions`, {
     deliverableUrl: "https://github.com/expressjs/cors",
     description: "Published the cors middleware. README covers npm install and origin configuration; tests are in /test.",
   })
-  assert(s1.status === 201, `submit: ${JSON.stringify(s1.body)}`)
-  const d1 = (await client.get(`/api/jobs/${j1.id}`)).body
+  assert(s1.status === 201 && s1.body.verification.ok, `submit: ${JSON.stringify(s1.body)}`)
+  let d1 = (await client.get(`/api/jobs/${j1.id}`)).body
   show(d1.verifications[0])
-  assert(s1.body.verification.ok, `verification failed: ${s1.body.verification.error}`)
-  if (d1.job.status !== "released") {
-    console.log(`  ! AI was conservative and disputed a passing deliverable (status ${d1.job.status}). Resolving via admin to keep going.`)
-    await admin.post(`/api/admin/jobs/${j1.id}/resolve`, { outcome: "release", notes: "E2E: deliverable verified manually." })
-  } else ok(`released on-chain: https://sepolia.arbiscan.io/tx/${s1.body.verification.txHash}`)
+  ok(`AI decision "${s1.body.verification.decision}" posted on-chain: https://sepolia.arbiscan.io/tx/${s1.body.verification.txHash}`)
+  if (d1.job.status === "challenged") await freelancer.post(`/api/jobs/${j1.id}/arguments`, { argument: "The README has npm install and origin docs; tests are in the test/ folder." })
+  d1 = await waitWhile(j1.id, ["proposed", "challenged"], windowMs + argsMs)
+  checkCommitments(d1)
+  assert(d1.job.status === "released" && d1.onchain.state === "Released", `expected released, got ${d1.job.status}/${d1.onchain.state}`)
+  ok(`settled without anyone clicking: released on-chain (${d1.job.lastChainAction.type}) https://sepolia.arbiscan.io/tx/${d1.job.lastChainAction.txHash}`)
+  ok("deliverable + verdict hashes recomputed locally match the contract")
 
-  console.log("\nPath 2: dispute (mismatched deliverable) → admin refund")
-  const j2 = await createAndFund(`E2E dispute ${stamp}`)
+  console.log("\nPath 2: mismatched deliverable must never pay out")
+  const j2 = await createAndFund(`E2E mismatch ${stamp}`)
   const s2 = await freelancer.post(`/api/jobs/${j2.id}/submissions`, {
     deliverableUrl: "https://github.com/sindresorhus/slugify",
     description: "Here is the CORS middleware as agreed, fully tested and documented.",
   })
   assert(s2.status === 201 && s2.body.verification.ok, `submit: ${JSON.stringify(s2.body)}`)
-  const d2 = (await freelancer.get(`/api/jobs/${j2.id}`)).body
+  let d2 = (await freelancer.get(`/api/jobs/${j2.id}`)).body
   show(d2.verifications[0])
-  assert(d2.job.status === "disputed", `SAFETY: mismatched deliverable was not disputed (status ${d2.job.status})`)
-  ok("mismatched deliverable disputed on-chain")
-  const listed = (await admin.get("/api/admin/jobs?status=disputed")).body.jobs.map((j: any) => j.id)
-  assert(listed.includes(j2.id), "admin dispute queue")
-  const r2 = await admin.post(`/api/admin/jobs/${j2.id}/resolve`, { outcome: "refund", notes: "Submitted repository is unrelated to the agreed deliverable." })
-  assert(r2.status === 200, `resolve: ${JSON.stringify(r2.body)}`)
-  ok(`admin refunded: https://sepolia.arbiscan.io/tx/${r2.body.job.resolution.txHash}`)
+  assert(s2.body.verification.decision !== "release", "SAFETY: mismatched deliverable got a release proposal")
+  ok(`AI decision "${s2.body.verification.decision}" (not release)`)
+  if (d2.job.status === "challenged") await client.post(`/api/jobs/${j2.id}/arguments`, { argument: "The submitted repository is a slug library, not CORS middleware." })
+  d2 = await waitWhile(j2.id, ["proposed", "challenged"], windowMs + argsMs)
+  checkCommitments(d2)
+  assert(d2.job.status !== "released", "SAFETY: mismatched deliverable was released")
+  if (d2.job.status === "disputed") {
+    const r2 = await admin.post(`/api/admin/jobs/${j2.id}/resolve`, { outcome: "refund", notes: "Submitted repository is unrelated to the agreed deliverable." })
+    assert(r2.status === 200, `resolve: ${JSON.stringify(r2.body)}`)
+  }
+  ok(`refunded to the client (${d2.job.status})`)
 
-  console.log("\nPath 3: complaints & reviews → moderation")
+  console.log("\nPath 3: client challenges a release with a real bond → AI jury")
+  const j3 = await createAndFund(`E2E challenge ${stamp}`)
+  const s3 = await freelancer.post(`/api/jobs/${j3.id}/submissions`, {
+    deliverableUrl: "https://github.com/expressjs/cors",
+    description: "Published the cors middleware. README covers npm install and origin configuration; tests are in /test.",
+  })
+  assert(s3.status === 201 && s3.body.verification.ok, `submit: ${JSON.stringify(s3.body)}`)
+  if (s3.body.verification.decision !== "release") {
+    console.log(`  ! AI chose "${s3.body.verification.decision}" instead of a release proposal; skipping the bonded-challenge path.`)
+  } else {
+    const d3 = (await client.get(`/api/jobs/${j3.id}`)).body
+    const bond = BigInt(d3.arbitration.bond.units)
+    const before = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [clientAcct.address] })
+    await pub.waitForTransactionReceipt({ hash: await clientWallet.writeContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "approve", args: [escrow, bond] }) })
+    const ch = await clientWallet.writeContract({ address: escrow, abi: escrowAbi, functionName: "challenge", args: [j3.onchainJobId] })
+    await pub.waitForTransactionReceipt({ hash: ch })
+    const c3 = await client.post(`/api/jobs/${j3.id}/challenge`, { txHash: ch, argument: "I don't think the tests are adequate; I want a refund." })
+    assert(c3.status === 200 && c3.body.job.status === "challenged", `challenge: ${JSON.stringify(c3.body)}`)
+    ok(`client challenged with a ${d3.arbitration.bond.display} USDC bond: https://sepolia.arbiscan.io/tx/${ch}`)
+    const a3 = await freelancer.post(`/api/jobs/${j3.id}/arguments`, { argument: "README documents npm install and the origin option; the test/ folder has the suite." })
+    assert(a3.status === 200, `argue: ${JSON.stringify(a3.body)}`)
+    const end = await waitWhile(j3.id, ["challenged"], argsMs)
+    const ruling = end.rulings[0]
+    for (const j of ruling.jurors) console.log(`      juror ${j.provider}:${j.model} → ${j.ok ? `${j.vote}@${j.confidence}` : `FAILED ${j.error}`}`)
+    assert(checkCommitments(end), "jury ruling committed on-chain")
+    const after = await pub.readContract({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "balanceOf", args: [clientAcct.address] })
+    if (end.job.status === "released") assert(before - after === bond, `upheld: client loses the bond (delta ${before - after})`)
+    if (end.job.status === "refunded") assert(after - before === BigInt(j3.amountUnits), `overturned: client gets funds back and keeps the bond (delta ${after - before})`)
+    ok(`jury ${ruling.outcome} (${ruling.reason}); status ${end.job.status}; bond settled correctly; ruling hash verified`)
+  }
+
+  console.log("\nPath 4: complaints & reviews → moderation")
   const rv = await client.post(`/api/jobs/${j1.id}/reviews`, { rating: 5, comment: "Great package, well documented and tested." })
   assert(rv.status === 201, `review: ${JSON.stringify(rv.body)}`)
   const cp = await freelancer.post(`/api/jobs/${j2.id}/complaints`, { category: "ai_verdict", description: "E2E complaint: testing the complaint moderation workflow." })
