@@ -1,7 +1,7 @@
 "use client"
 
 import { isAddressEqual } from "viem"
-import { useConnect, useConnection, useConnectors, useDisconnect, useSignMessage, useSwitchChain } from "wagmi"
+import { useConnection, useDisconnect, useSignMessage, useSwitchChain } from "wagmi"
 import { useState } from "react"
 import { toast } from "sonner"
 import { CheckCircle2, Link2, Loader2, Wallet } from "lucide-react"
@@ -12,6 +12,7 @@ import { api, errorText } from "@/lib/api"
 import type { Me } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { addrUrl, CHAIN, shortAddr } from "@/lib/web3"
+import { ConnectWalletDialog } from "./connect-wallet-dialog"
 
 /**
  * Connecting a wallet and linking it to the Yorse account are two different things:
@@ -31,14 +32,14 @@ export function WalletButton() {
   return (
     <div className="flex items-center gap-2">
       {!linked && (
-        <Button size="sm" onClick={() => linking.link(address)} disabled={linking.busy} className="bg-brand-orange text-white hover:bg-brand-orange/90">
+        <Button size="sm" onClick={() => linking.link(address)} disabled={linking.busy} className="bg-brand-green text-white hover:bg-brand-green/90">
           {linking.busy ? <Loader2 className="size-4 animate-spin" /> : <Link2 className="size-4" />}
           {linking.busy ? "Check your wallet…" : me?.walletAddress ? "Link this wallet" : "Link wallet"}
         </Button>
       )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline" className={cn(linked ? "border-brand-teal/40" : "border-border")}>
+          <Button size="sm" variant="outline" className={cn("h-9 rounded-lg bg-card", linked ? "border-brand-teal/40" : "border-border")}>
             {linked ? <CheckCircle2 className="size-4 text-brand-teal" /> : <Wallet className="size-4 text-muted-foreground" />}
             {shortAddr(address)}
           </Button>
@@ -70,31 +71,67 @@ export function WalletButton() {
   )
 }
 
-function ConnectButton({ className, label = "Connect wallet" }: { className?: string; label?: string }) {
-  const connectors = useConnectors()
-  const connect = useConnect()
+function ConnectButton({ className, label = "Connect Wallet" }: { className?: string; label?: string }) {
+  const [open, setOpen] = useState(false)
   return (
-    <Button
-      size="sm"
-      variant="outline"
-      className={className}
-      disabled={connect.isPending}
-      onClick={() => {
-        const c = connectors[0]
-        if (!c) return toast.error("No browser wallet found. Install MetaMask or another injected wallet.")
-        connect.mutate({ connector: c, chainId: CHAIN.id }, { onError: (e) => toast.error(errorText(e)) })
-      }}
-    >
-      <Wallet className="size-4" />
-      {connect.isPending ? "Connecting…" : label}
-    </Button>
+    <>
+      <Button size="sm" className={cn("h-9 rounded-lg px-4 shadow-soft", className)} onClick={() => setOpen(true)}>
+        <Wallet className="size-4" />
+        {label}
+      </Button>
+      <ConnectWalletDialog open={open} onOpenChange={setOpen} />
+    </>
+  )
+}
+
+/** Compact wallet state for the sidebar footer: address, network and whether it's linked. */
+export function WalletStatusCard() {
+  const { address, chainId, isConnected } = useConnection()
+  const { me } = useAuth()
+  const [open, setOpen] = useState(false)
+  const linked = !!me?.walletAddress && !!address && isAddressEqual(me.walletAddress, address)
+  const state = !isConnected || !address ? "off" : chainId !== CHAIN.id ? "chain" : linked ? "linked" : "unlinked"
+  const shown = address ?? me?.walletAddress ?? null
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => state === "off" && setOpen(true)}
+        className={cn(
+          "flex w-full items-center gap-3 rounded-xl border border-sidebar-border bg-white/5 p-3 text-left transition-colors",
+          state === "off" && "hover:bg-white/10",
+        )}
+      >
+        <span
+          className={cn(
+            "flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-bold",
+            state === "linked" ? "bg-emerald-400 text-emerald-950" : "bg-white/10 text-emerald-100",
+          )}
+        >
+          <Wallet className="size-4" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-mono text-sm text-white">{shown ? shortAddr(shown) : "No wallet"}</span>
+          <span
+            className={cn(
+              "flex items-center gap-1.5 text-xs",
+              state === "linked" ? "text-emerald-300" : state === "off" ? "text-emerald-100/60" : "text-amber-300",
+            )}
+          >
+            <span className={cn("size-1.5 rounded-full", state === "linked" ? "bg-emerald-400" : state === "off" ? "bg-white/40" : "bg-amber-400")} />
+            {state === "linked" ? "Connected · linked" : state === "chain" ? "Wrong network" : state === "unlinked" ? "Connected · not linked" : "Click to connect"}
+          </span>
+        </span>
+      </button>
+      <ConnectWalletDialog open={open} onOpenChange={setOpen} />
+    </>
   )
 }
 
 function SwitchChainButton({ className }: { className?: string }) {
   const switchChain = useSwitchChain()
   return (
-    <Button size="sm" variant="destructive" className={className} onClick={() => switchChain.mutate({ chainId: CHAIN.id }, { onError: (e) => toast.error(errorText(e)) })}>
+    <Button size="sm" variant="destructive" className={cn("h-9 rounded-lg", className)} onClick={() => switchChain.mutate({ chainId: CHAIN.id }, { onError: (e) => toast.error(errorText(e)) })}>
       Switch to Arbitrum Sepolia
     </Button>
   )
@@ -121,7 +158,7 @@ export function LinkWalletButton({ className }: { className?: string }) {
   }
   return (
     <div className={cn("space-y-2", className)}>
-      <Button size="sm" onClick={() => linking.link(address)} disabled={linking.busy} className="bg-brand-orange text-white hover:bg-brand-orange/90">
+      <Button size="sm" onClick={() => linking.link(address)} disabled={linking.busy} className="bg-brand-green text-white hover:bg-brand-green/90">
         {linking.busy ? <Loader2 className="size-4 animate-spin" /> : <Link2 className="size-4" />}
         {linking.busy ? "Check your wallet…" : `Link ${shortAddr(address)}`}
       </Button>
