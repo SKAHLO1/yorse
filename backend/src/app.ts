@@ -5,8 +5,10 @@ import helmet from "helmet"
 import { z, ZodError } from "zod"
 import type { AuthUser } from "./auth"
 import { errorMessage, forbidden, HttpError, unauthorized } from "./lib/errors"
+import { createAgentService, isAgentKey } from "./services/agents"
 import { createFeedbackService } from "./services/feedback"
 import { createJobService, type Deps } from "./services/jobs"
+import { ALL_STATUSES, type JobStatus } from "./types"
 
 declare global {
   namespace Express {
@@ -60,6 +62,16 @@ const schemas = {
   }),
   review: z.object({ rating: z.number().int().min(1).max(5), comment: z.string().trim().min(10).max(2000) }),
   resolve: z.object({ outcome: z.enum(["release", "refund"]), notes: z.string().trim().min(10).max(4000) }),
+  challenge: z.object({ txHash: txHash.optional(), argument: z.string().trim().min(20).max(4000).nullish() }),
+  argument: z.object({ argument: z.string().trim().min(20).max(4000) }),
+  agentChallenge: z.object({ address: z.string() }),
+  agentRegister: z.object({
+    address: z.string(),
+    signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
+    name: z.string().trim().min(3).max(60),
+    description: z.string().trim().min(20).max(1000),
+    homepage: httpUrl.max(500).nullish().transform((v) => v || null),
+  }),
   moderateComplaint: z.object({
     status: z.enum(["open", "under_review", "resolved", "dismissed"]),
     adminNotes: z.string().trim().max(4000).nullish().transform((v) => v || null),
@@ -68,9 +80,7 @@ const schemas = {
     status: z.enum(["published", "hidden"]),
     moderationNote: z.string().trim().max(2000).nullish().transform((v) => v || null),
   }),
-  jobStatus: z
-    .enum(["open", "pending_acceptance", "declined", "cancelled", "awaiting_funding", "funded", "submitted", "released", "disputed", "resolved_release", "resolved_refund"])
-    .optional(),
+  jobStatus: z.enum(ALL_STATUSES as [JobStatus, ...JobStatus[]]).optional(),
 }
 
 const body = <T extends z.ZodTypeAny>(schema: T, req: Request): z.infer<T> => schema.parse(req.body ?? {})
@@ -81,6 +91,7 @@ const param = (req: Request, name: string) => String(req.params[name])
 export function createApp(deps: Deps & { corsOrigins: string[] }) {
   const jobs = createJobService(deps)
   const feedback = createFeedbackService(deps.store, jobs, deps.now)
+  const agents = createAgentService({ store: deps.store, now: deps.now })
   const app = express()
 
   app.disable("x-powered-by")
@@ -92,21 +103,45 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
   // ---- public
   app.get("/health", async (_req, res) => {
     const chain = await deps.chain.health().catch((e) => ({ error: errorMessage(e) }))
-    res.json({ ok: !("error" in chain), chain, ai: deps.ai.providers })
+    res.json({ ok: !("error" in chain), chain, ai: deps.ai.providers, jury: deps.jury.jurors })
   })
 
   // ---- auth
   const requireAuth = async (req: Request, _res: Response, next: NextFunction) => {
     const header = req.headers.authorization
     if (!header?.startsWith("Bearer ")) return next(unauthorized())
+    const token = header.slice(7)
+    if (isAgentKey(token)) {
+      try {
+        const user = await agents.authenticate(token)
+        return user ? ((req.user = user), next()) : next(unauthorized("Invalid or revoked agent API key"))
+      } catch (err) {
+        return next(err)
+      }
+    }
     try {
-      req.user = await deps.auth.verifyIdToken(header.slice(7))
+      req.user = await deps.auth.verifyIdToken(token)
       next()
     } catch {
       next(unauthorized("Invalid or expired session; sign in again"))
     }
   }
   const requireAdmin = (req: Request, _res: Response, next: NextFunction) => (req.user?.admin ? next() : next(forbidden("Admin access required")))
+
+  // ---- agent registration (public: an agent has no session until it proves its wallet)
+  const agentLimiter = rateLimit({
+    windowMs: 10 * 60_000,
+    limit: 20,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? "0.0.0.0"),
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: { code: "rate_limited", message: "Too many requests; slow down" } },
+  })
+  app.post("/api/agents/challenge", agentLimiter, async (req, res) => res.json(await agents.challenge(body(schemas.agentChallenge, req).address)))
+  app.post("/api/agents/register", agentLimiter, async (req, res) => {
+    const input = body(schemas.agentRegister, req)
+    res.status(201).json(await agents.register({ ...input, signature: input.signature as `0x${string}` }))
+  })
 
   const api = express.Router()
   api.use(requireAuth)
@@ -125,13 +160,23 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
   api.get("/me", async (req, res) => {
     const profile = await jobs.ensureProfile(req.user!)
     const { walletChallenge: _omit, ...safe } = profile
-    res.json({ user: { ...safe, admin: req.user!.admin } })
+    res.json({ user: { ...safe, admin: req.user!.admin, agent: !!req.user!.agent } })
   })
   api.post("/me/wallet/challenge", async (req, res) => res.json(await jobs.walletChallenge(req.user!)))
   api.post("/me/wallet", async (req, res) => {
     const { address, signature } = body(schemas.linkWallet, req)
     const { walletChallenge: _omit, ...safe } = await jobs.linkWallet(req.user!, address, signature as `0x${string}`)
     res.json({ user: { ...safe, admin: req.user!.admin } })
+  })
+
+  // ---- agent keys
+  api.get("/agents/keys", async (req, res) => {
+    if (!req.user!.agent) throw forbidden("Only agents have API keys")
+    res.json({ keys: await agents.listKeys(req.user!) })
+  })
+  api.post("/agents/keys/:prefix/revoke", async (req, res) => {
+    if (!req.user!.agent) throw forbidden("Only agents have API keys")
+    res.json(await agents.revokeKey(req.user!, param(req, "prefix")))
   })
 
   // ---- live feed & public profiles
@@ -166,9 +211,18 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
     res.status(201).json(result)
   })
   api.post("/jobs/:id/verify", heavyLimiter, async (req, res) => {
-    const outcome = await jobs.retryVerification(req.user!, param(req, "id"))
+    const outcome = await jobs.retry(req.user!, param(req, "id"))
     res.status(outcome.ok ? 200 : 502).json({ verification: outcome })
   })
+  // ---- optimistic arbitration
+  api.post("/jobs/:id/challenge", heavyLimiter, async (req, res) => {
+    const { txHash: tx, argument } = body(schemas.challenge, req)
+    res.json({ job: await jobs.challengeProposal(req.user!, param(req, "id"), { txHash: tx as `0x${string}` | undefined, argument }) })
+  })
+  api.post("/jobs/:id/arguments", heavyLimiter, async (req, res) =>
+    res.json({ job: await jobs.submitArgument(req.user!, param(req, "id"), body(schemas.argument, req).argument) }),
+  )
+  api.post("/jobs/:id/finalize", heavyLimiter, async (req, res) => res.json({ job: await jobs.finalizeAsParticipant(req.user!, param(req, "id")) }))
   api.post("/jobs/:id/dispute", heavyLimiter, async (req, res) =>
     res.json({ job: await jobs.raiseDispute(req.user!, param(req, "id"), body(schemas.dispute, req).reason) }),
   )
@@ -190,7 +244,13 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
       jobs: { total: all.length, byStatus },
       complaints: { total: complaints.length, open: complaints.filter((c) => c.status === "open" || c.status === "under_review").length },
       reviews: { total: reviews.length, hidden: reviews.filter((r) => r.status === "hidden").length },
-      attention: all.filter((j) => j.status === "submitted" && (j.verification.state === "error" || j.lastChainAction?.state === "failed")).map((j) => j.id),
+      attention: all
+        .filter(
+          (j) =>
+            (j.status === "submitted" && (j.verification.state === "error" || j.lastChainAction?.state === "failed")) ||
+            (j.status === "challenged" && (j.jury?.state === "error" || j.lastChainAction?.state === "failed")),
+        )
+        .map((j) => j.id),
     })
   })
   admin.get("/jobs", async (req, res) => res.json({ jobs: await deps.store.jobs.list({ status: schemas.jobStatus.parse(req.query.status || undefined) }) }))
@@ -203,7 +263,7 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
     res.json({ job: await jobs.raiseDispute(req.user!, param(req, "id"), body(schemas.dispute, req).reason, true) }),
   )
   admin.post("/jobs/:id/verify", heavyLimiter, async (req, res) => {
-    const outcome = await jobs.retryVerification(req.user!, param(req, "id"))
+    const outcome = await jobs.retry(req.user!, param(req, "id"))
     res.status(outcome.ok ? 200 : 502).json({ verification: outcome })
   })
   admin.get("/complaints", async (req, res) => {
@@ -244,5 +304,5 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
     res.status(500).json({ error: { code: "internal", message: errorMessage(err) } })
   })
 
-  return app
+  return Object.assign(app, { jobs })
 }
