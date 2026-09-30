@@ -142,6 +142,8 @@ describe("ratings & public profiles", () => {
     })
     const s = await w.dev.post(`/api/jobs/${job.id}/submissions`, { deliverableUrl: "https://example.com/api", description: "Booking API deployed with integration tests." })
     expect(s.body.verification.decision).toBe("release")
+    w.clock.advance(180)
+    await w.keeper.tick()
     return job
   }
 
