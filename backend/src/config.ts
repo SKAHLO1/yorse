@@ -21,6 +21,12 @@ const envSchema = z.object({
   GROQ_MODEL: z.string().default("openai/gpt-oss-120b"),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
+
+  // AI jury: comma-separated provider:model specs. Default picks three different models.
+  JURY_MODELS: z.string().optional(),
+  // Seconds both sides may argue before the jury convenes (demo pace by default).
+  ARGUMENT_WINDOW_SECONDS: z.coerce.number().int().positive().default(180),
+  KEEPER_INTERVAL_MS: z.coerce.number().int().min(1000).default(10_000),
 })
 
 export type Config = ReturnType<typeof loadConfig>
@@ -68,5 +74,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     firebase,
     groq: e.GROQ_API_KEY ? { apiKey: e.GROQ_API_KEY, model: e.GROQ_MODEL } : null,
     gemini: e.GEMINI_API_KEY ? { apiKey: e.GEMINI_API_KEY, model: e.GEMINI_MODEL } : null,
+    juryModels: juryModels(e),
+    argumentWindowSeconds: e.ARGUMENT_WINDOW_SECONDS,
+    keeperIntervalMs: e.KEEPER_INTERVAL_MS,
   }
+}
+
+/** Three jurors, as diverse as the configured keys allow. */
+export function juryModels(e: { JURY_MODELS?: string; GROQ_API_KEY?: string; GEMINI_API_KEY?: string; GROQ_MODEL: string; GEMINI_MODEL: string }): string[] {
+  if (e.JURY_MODELS) return e.JURY_MODELS.split(",").map((s) => s.trim()).filter(Boolean)
+  const groq = e.GROQ_API_KEY ? [`groq:${e.GROQ_MODEL}`, "groq:qwen/qwen3.8-27b", "groq:openai/gpt-oss-20b"] : []
+  const gemini = e.GEMINI_API_KEY ? [`gemini:${e.GEMINI_MODEL}`, "gemini:gemini-2.5-flash-lite", "gemini:gemini-2.5-pro"] : []
+  // Interleave so each provider is represented when both keys are set.
+  const mixed = groq.length && gemini.length ? [groq[0], gemini[0], groq[1], gemini[1], groq[2], gemini[2]] : [...groq, ...gemini]
+  return [...new Set(mixed)].slice(0, 3)
 }
