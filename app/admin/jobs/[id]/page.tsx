@@ -7,6 +7,7 @@ import { useState } from "react"
 import { toast } from "sonner"
 import { AlertTriangle, ArrowLeft, Gavel } from "lucide-react"
 import { AppShell } from "@/components/app/app-shell"
+import { ChallengePanel, JuryRulingCard, ProofCard, ProposalPanel } from "@/components/app/arbitration"
 import { VerificationStatus } from "@/components/app/job-actions"
 import { ComplaintItem, fmtDate, OnchainCard, ReviewItem, SubmissionsCard, TermsCard, Timeline, TxLink } from "@/components/app/job-parts"
 import { ComplaintModeration, ReviewModeration } from "@/components/app/moderation"
@@ -46,7 +47,12 @@ function AdminJob() {
     )
   const detail = q.data!
   const { job } = detail
-  const canAdminDispute = job.status === "funded" || (job.status === "submitted" && (job.verification.state === "error" || job.pendingDecision === "dispute"))
+  const chainFailed = job.lastChainAction?.state === "failed"
+  const canAdminDispute =
+    job.status === "funded" ||
+    (job.status === "submitted" && (job.verification.state === "error" || chainFailed)) ||
+    (job.status === "challenged" && (job.jury.state === "error" || chainFailed))
+  const ruling = detail.rulings.find((r) => r.id === job.jury.rulingId && r.status === "completed")
 
   return (
     <div className="space-y-6">
@@ -70,6 +76,9 @@ function AdminJob() {
         <div className="min-w-0 space-y-6">
           {job.status === "disputed" && <ResolvePanel detail={detail} />}
           {job.status === "submitted" && <VerificationStatus detail={detail} admin />}
+          {job.status === "proposed" && <ProposalPanel detail={detail} />}
+          {job.status === "challenged" && <ChallengePanel detail={detail} admin />}
+          {ruling && <JuryRulingCard ruling={ruling} onchainHash={"error" in detail.onchain ? undefined : detail.onchain.rulingHash} />}
           {canAdminDispute && <AdminDispute detail={detail} />}
           {job.resolution && (
             <Alert>
@@ -88,6 +97,7 @@ function AdminJob() {
 
           <TermsCard job={job} />
           <SubmissionsCard submissions={detail.submissions} verifications={detail.verifications} currentId={job.currentSubmissionId} />
+          <ProofCard detail={detail} />
 
           <Card>
             <CardHeader>
@@ -158,7 +168,17 @@ function ResolvePanel({ detail }: { detail: JobDetail }) {
           <Gavel className="size-4 text-brand-orange" /> Resolve dispute
         </CardTitle>
         <CardDescription>
-          {job.dispute?.source === "ai" ? "AI did not meet the release rule" : `Opened by ${job.dispute?.source}`}: {job.dispute?.reason}
+          {job.dispute?.source === "jury"
+            ? "AI jury split"
+            : job.dispute?.source === "timeout"
+              ? "Relayer liveness timeout"
+              : job.dispute?.source === "ai"
+                ? "AI did not meet the release rule"
+                : `Opened by ${job.dispute?.source}`}
+          : {job.dispute?.reason}
+          {job.challenge?.source === "party" && (
+            <> · The {job.challenge.challengerRole}'s {job.challenge.bondUsdc} USDC bond is returned if you overturn the AI's proposal ({job.proposal?.outcome}), otherwise it goes to the other side.</>
+          )}
           {latest && latest.unmatched_criteria.length > 0 && <> · Unmatched: {latest.unmatched_criteria.join("; ")}</>}
         </CardDescription>
       </CardHeader>
