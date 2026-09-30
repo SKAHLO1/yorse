@@ -1,4 +1,5 @@
 import type {
+  ApiKey,
   Application,
   Complaint,
   ComplaintStatus,
@@ -7,6 +8,7 @@ import type {
   JobStatus,
   Review,
   ReviewStatus,
+  Ruling,
   Submission,
   UserProfile,
   Verification,
@@ -60,6 +62,19 @@ export interface Store {
     create(v: Verification): Promise<void>
     get(jobId: string, id: string): Promise<Verification | null>
     listForJob(jobId: string): Promise<Verification[]>
+  }
+
+  apiKeys: {
+    create(k: ApiKey): Promise<void>
+    get(id: string): Promise<ApiKey | null>
+    update(id: string, patch: Partial<ApiKey>): Promise<void>
+    listForUid(uid: string): Promise<ApiKey[]>
+  }
+
+  rulings: {
+    create(r: Ruling): Promise<void>
+    get(jobId: string, id: string): Promise<Ruling | null>
+    listForJob(jobId: string): Promise<Ruling[]>
   }
 
   events: {
