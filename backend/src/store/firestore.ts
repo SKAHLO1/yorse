@@ -11,7 +11,9 @@ import { byAtAsc, byCreatedAsc, byCreatedDesc, type Store } from "./types"
  *   jobs/{jobId}
  *   jobs/{jobId}/submissions/{id}
  *   jobs/{jobId}/verifications/{id}
+ *   jobs/{jobId}/rulings/{id}
  *   jobs/{jobId}/events/{id}
+ *   apiKeys/{sha256(key)}
  *   complaints/{id}
  *   reviews/{jobId}_{reviewerUid}
  *
@@ -23,6 +25,7 @@ export function createFirestoreStore(db: Firestore): Store {
   const jobs = db.collection("jobs")
   const complaints = db.collection("complaints")
   const reviews = db.collection("reviews")
+  const apiKeys = db.collection("apiKeys")
   const sub = (jobId: string, name: string) => jobs.doc(jobId).collection(name)
   const data = <T>(snap: FirebaseFirestore.DocumentSnapshot): T | null => (snap.exists ? (snap.data() as T) : null)
   const list = <T>(q: FirebaseFirestore.QuerySnapshot) => q.docs.map((d) => d.data() as T)
@@ -105,6 +108,19 @@ export function createFirestoreStore(db: Firestore): Store {
       create: async (v) => void (await sub(v.jobId, "verifications").doc(v.id).set(v)),
       get: async (jobId, id) => data(await sub(jobId, "verifications").doc(id).get()),
       listForJob: async (jobId) => list<any>(await sub(jobId, "verifications").get()).sort(byCreatedDesc),
+    },
+
+    apiKeys: {
+      create: async (k) => void (await apiKeys.doc(k.id).create(k)),
+      get: async (id) => data(await apiKeys.doc(id).get()),
+      update: async (id, patch) => void (await apiKeys.doc(id).update(patch)),
+      listForUid: async (uid) => list<any>(await apiKeys.where("uid", "==", uid).limit(100).get()).sort(byCreatedDesc),
+    },
+
+    rulings: {
+      create: async (r) => void (await sub(r.jobId, "rulings").doc(r.id).set(r)),
+      get: async (jobId, id) => data(await sub(jobId, "rulings").doc(id).get()),
+      listForJob: async (jobId) => list<any>(await sub(jobId, "rulings").get()).sort(byCreatedDesc),
     },
 
     events: {
