@@ -16,7 +16,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           {children}
-          <Toaster theme="dark" richColors closeButton position="bottom-right" />
+          <Toaster theme="light" richColors closeButton position="bottom-right" />
         </AuthProvider>
       </QueryClientProvider>
     </WagmiProvider>
