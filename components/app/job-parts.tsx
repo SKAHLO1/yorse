@@ -18,9 +18,11 @@ export function TxLink({ hash, label }: { hash?: string | null; label?: string }
   )
 }
 
-export function TermsCard({ job }: { job: Job }) {
+const BARE = "gap-4 border-0 py-0 shadow-none [&>[data-slot=card-content]]:px-0 [&>[data-slot=card-header]]:px-0"
+
+export function TermsCard({ job, bare = false }: { job: Job; bare?: boolean }) {
   return (
-    <Card>
+    <Card className={bare ? BARE : "shadow-soft"}>
       <CardHeader>
         <CardTitle>Agreed terms</CardTitle>
         <CardDescription>What the AI verifies the deliverable against.</CardDescription>
@@ -72,8 +74,9 @@ function Meta({ label, value, sub }: { label: string; value: string; sub?: React
 
 export function OnchainCard({ detail }: { detail: JobDetail }) {
   const oc = detail.onchain
+  const deadline = !("error" in oc) && oc.state === "Proposed" && oc.challengeDeadline ? new Date(oc.challengeDeadline * 1000).toISOString() : null
   return (
-    <Card className="gap-3">
+    <Card className="gap-3 shadow-soft">
       <CardHeader>
         <CardTitle className="text-sm">On-chain escrow</CardTitle>
       </CardHeader>
@@ -84,6 +87,9 @@ export function OnchainCard({ detail }: { detail: JobDetail }) {
           <>
             <Row k="State" v={<Badge variant="outline">{oc.state}</Badge>} />
             {oc.state !== "None" && <Row k="Locked" v={`${(Number(oc.amount) / 1e6).toFixed(2)} USDC`} />}
+            {oc.proposed && oc.proposed !== "None" && <Row k="AI proposal" v={oc.proposed} />}
+            {deadline && <Row k="Challenge until" v={fmtDate(deadline)} />}
+            {oc.bond && oc.bond !== "0" && <Row k="Challenge bond" v={`${(Number(oc.bond) / 1e6).toFixed(2)} USDC`} />}
           </>
         )}
         <Row k="Contract" v={<a className="font-mono hover:underline" href={addrUrl(detail.escrowAddress)} target="_blank" rel="noreferrer">{shortAddr(detail.escrowAddress)}</a>} />
@@ -130,13 +136,14 @@ export function VerdictCard({ v, current }: { v: Verification; current?: boolean
   }
   const r = v.result!
   const released = v.decision === "release"
+  const decisionLabel = v.decision === "release" ? "propose release" : v.decision === "refund" ? "propose refund" : v.decision === "escalate" ? "send to the AI jury" : "send to dispute"
   return (
     <div className={cn("rounded-lg border p-4 text-sm", released ? "border-brand-teal/40 bg-brand-teal/5" : "border-brand-orange/40 bg-brand-orange/5")}>
       <div className="flex flex-wrap items-center gap-2">
         <Bot className="size-4 text-muted-foreground" />
         <span className="font-medium">AI verdict: {r.verdict}</span>
         <span className="text-muted-foreground">·</span>
-        <span className="font-medium">Decision: {released ? "release escrow" : "send to dispute"}</span>
+        <span className="font-medium">Decision: {decisionLabel}</span>
         {current && <Badge variant="outline">current</Badge>}
         <span className="ml-auto text-xs text-muted-foreground">
           {v.provider}:{v.model}
@@ -161,6 +168,7 @@ export function VerdictCard({ v, current }: { v: Verification; current?: boolean
         <CriteriaList title="Unmatched" items={r.unmatched_criteria} />
       </div>
       {v.decisionReason && <p className="mt-3 rounded bg-background/60 p-2 text-xs text-muted-foreground">Decision rule: {v.decisionReason}</p>}
+      {v.evidence?.screenshots && v.evidence.screenshots.length > 0 && <WhatTheAiSaw shots={v.evidence.screenshots} />}
       {v.evidence && (
         <p className="mt-2 text-xs text-muted-foreground">
           Evidence: {v.evidence.fetched ? "fetched" : "not fetched"}
@@ -169,6 +177,30 @@ export function VerdictCard({ v, current }: { v: Verification; current?: boolean
       )}
       <Attempts v={v} />
       <p className="mt-2 text-xs text-muted-foreground">{fmtDate(v.createdAt)}</p>
+    </div>
+  )
+}
+
+/** The deliverable as a real browser rendered it, exactly as the vision model received it. */
+function WhatTheAiSaw({ shots }: { shots: NonNullable<Verification["evidence"]["screenshots"]> }) {
+  return (
+    <div className="mt-4">
+      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">What the AI saw</div>
+      <div className="flex items-start gap-3 overflow-x-auto">
+        {shots.map((s) => (
+          <figure
+            key={s.label}
+            className={cn("block shrink-0 overflow-hidden rounded-md border bg-background", s.label === "desktop" ? "w-64 sm:w-80" : "w-24 sm:w-28")}
+            title={`${s.label} ${s.width}×${s.height} · keccak ${s.hash}`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={`data:${s.mimeType};base64,${s.base64}`} alt={`${s.label} screenshot of the deliverable`} className="max-h-72 w-full object-cover object-top" />
+            <div className="border-t px-2 py-1 text-[10px] text-muted-foreground">
+              {s.label} · {s.width}px
+            </div>
+          </figure>
+        ))}
+      </div>
     </div>
   )
 }
@@ -209,10 +241,20 @@ function CriteriaList({ title, items, ok }: { title: string; items: string[]; ok
   )
 }
 
-export function SubmissionsCard({ submissions, verifications, currentId }: { submissions: Submission[]; verifications: Verification[]; currentId: string | null }) {
+export function SubmissionsCard({
+  submissions,
+  verifications,
+  currentId,
+  bare = false,
+}: {
+  submissions: Submission[]
+  verifications: Verification[]
+  currentId: string | null
+  bare?: boolean
+}) {
   if (!submissions.length) return null
   return (
-    <Card>
+    <Card className={bare ? BARE : "shadow-soft"}>
       <CardHeader>
         <CardTitle>Submissions & AI verdicts</CardTitle>
         <CardDescription>Every submission and every verification attempt, newest first.</CardDescription>
@@ -253,35 +295,52 @@ export function SubmissionsCard({ submissions, verifications, currentId }: { sub
 }
 
 const EVENT_TONE: Record<string, string> = {
-  released: "bg-brand-teal",
-  resolved: "bg-brand-teal",
-  disputed: "bg-brand-orange",
-  ai_error: "bg-destructive",
-  chain_error: "bg-destructive",
-  funding_mismatch: "bg-destructive",
+  released: "bg-emerald-500 ring-emerald-100",
+  resolved: "bg-emerald-500 ring-emerald-100",
+  refunded: "bg-slate-400 ring-slate-100",
+  proposed: "bg-indigo-500 ring-indigo-100",
+  challenged: "bg-amber-500 ring-amber-100",
+  escalated: "bg-amber-500 ring-amber-100",
+  jury_ruling: "bg-indigo-500 ring-indigo-100",
+  disputed: "bg-orange-500 ring-orange-100",
+  ai_error: "bg-red-500 ring-red-100",
+  jury_error: "bg-red-500 ring-red-100",
+  chain_error: "bg-red-500 ring-red-100",
+  funding_mismatch: "bg-red-500 ring-red-100",
 }
 
-export function Timeline({ events }: { events: JobEvent[] }) {
+/** Vertical job history: a green rail with one dot per event, newest last. */
+export function Timeline({ events, bare = false }: { events: JobEvent[]; bare?: boolean }) {
+  const list = (
+    <ol className="relative space-y-5 pl-7">
+      <span className="absolute bottom-2 left-[7px] top-2 w-0.5 rounded bg-emerald-100" aria-hidden />
+      {events.map((e, i) => (
+        <li key={e.id} className="relative text-sm">
+          <span
+            className={cn(
+              "absolute -left-7 top-1 size-4 rounded-full ring-4",
+              EVENT_TONE[e.type] ?? "bg-emerald-500 ring-emerald-100",
+              i === events.length - 1 && "animate-pulse",
+            )}
+          />
+          <div className="font-medium leading-snug">{e.message}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>{fmtDate(e.at)}</span>
+            <span>· {e.actorRole}</span>
+            {typeof e.data?.txHash === "string" && <TxLink hash={e.data.txHash} />}
+          </div>
+        </li>
+      ))}
+      {!events.length && <li className="text-sm text-muted-foreground">No activity yet.</li>}
+    </ol>
+  )
+  if (bare) return list
   return (
-    <Card>
+    <Card className="shadow-soft">
       <CardHeader>
-        <CardTitle>History</CardTitle>
+        <CardTitle className="text-base">Timeline</CardTitle>
       </CardHeader>
-      <CardContent>
-        <ol className="relative space-y-4 border-l border-border pl-5">
-          {events.map((e) => (
-            <li key={e.id} className="text-sm">
-              <span className={cn("absolute -left-[5px] mt-1.5 size-2.5 rounded-full bg-muted-foreground", EVENT_TONE[e.type])} />
-              <div>{e.message}</div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>{fmtDate(e.at)}</span>
-                <span>· {e.actorRole}</span>
-                {typeof e.data?.txHash === "string" && <TxLink hash={e.data.txHash} />}
-              </div>
-            </li>
-          ))}
-        </ol>
-      </CardContent>
+      <CardContent>{list}</CardContent>
     </Card>
   )
 }
