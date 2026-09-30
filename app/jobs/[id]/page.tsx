@@ -3,11 +3,12 @@
 import { useQuery } from "@tanstack/react-query"
 import Link from "next/link"
 import { useParams } from "next/navigation"
-import { AlertTriangle, ArrowLeft, Gavel, Scale } from "lucide-react"
+import { AlertTriangle, ArrowLeft, CalendarDays, Gavel, Globe2, Lock, UserRound } from "lucide-react"
+import { AiVerificationCard } from "@/components/app/ai-verification-card"
 import { AppShell } from "@/components/app/app-shell"
 import { ApplicationsPanel } from "@/components/app/applications-panel"
+import { ChallengePanel, JuryRulingCard, ProofCard, ProposalPanel, SettledBanner } from "@/components/app/arbitration"
 import { ApplyDialog } from "@/components/app/feed"
-import { UserChip } from "@/components/app/user-bits"
 import {
   CancelJob,
   ComplaintForm,
@@ -20,13 +21,14 @@ import {
 } from "@/components/app/job-actions"
 import { ComplaintItem, fmtDate, OnchainCard, ReviewItem, SubmissionsCard, TermsCard, Timeline, TxLink, VerdictCard } from "@/components/app/job-parts"
 import { StatusBadge } from "@/components/app/status-badge"
+import { UserChip } from "@/components/app/user-bits"
 import { useAuth } from "@/components/auth-provider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, errorText } from "@/lib/api"
-import { Badge } from "@/components/ui/badge"
 import { COMPLAINABLE, TERMINAL, type FeedItem, type JobDetail } from "@/lib/types"
 
 export default function JobPage() {
@@ -37,6 +39,8 @@ export default function JobPage() {
   )
 }
 
+const LOCKED = ["funded", "submitted", "proposed", "challenged", "disputed"]
+
 function JobView() {
   const { id } = useParams<{ id: string }>()
   const { me } = useAuth()
@@ -44,11 +48,16 @@ function JobView() {
     queryKey: ["job", id],
     queryFn: () => api<JobDetail>(`/jobs/${id}`),
     enabled: !!me,
-    // Poll while the AI/chain step is in flight.
-    refetchInterval: (query) => (query.state.data?.job.status === "submitted" && query.state.data.job.verification.state === "running" ? 4000 : false),
+    // Poll while the AI, the jury or a timed window is in flight.
+    refetchInterval: (query) => {
+      const job = query.state.data?.job
+      if (!job) return false
+      if (job.status === "submitted" && job.verification.state === "running") return 4000
+      return job.status === "proposed" || job.status === "challenged" ? 5000 : false
+    },
   })
 
-  if (q.isLoading || !me) return <Skeleton className="h-96 w-full" />
+  if (q.isLoading || !me) return <Skeleton className="h-96 w-full rounded-2xl" />
   if (q.error)
     return (
       <Alert variant="destructive">
@@ -61,27 +70,44 @@ function JobView() {
   const { job, viewerRole: role } = detail
   const counterpart = (role === "client" ? job.freelancerEmail : job.clientEmail) ?? "the other party"
   const current = detail.verifications.find((v) => v.id === job.verification.verificationId)
+  const ruling = detail.rulings.find((r) => r.id === job.jury.rulingId)
+  const onchainRulingHash = "error" in detail.onchain ? undefined : detail.onchain.rulingHash
   const myReview = detail.reviews.find((r) => r.reviewerUid === me.uid)
+  const daysLeft = Math.ceil((Date.parse(job.dueDate) - Date.now()) / 86400_000)
 
   return (
     <div className="space-y-6">
       <Link href="/dashboard" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="size-4" /> Dashboard
       </Link>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="font-brand text-2xl font-bold break-words">{job.title}</h1>
-          <p className="text-sm text-muted-foreground">
-            {role ? `You are the ${role === "freelancer" ? "developer" : role}` : "Open listing"} · created {fmtDate(job.createdAt)}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-lg">{job.amountUsdc} USDC</span>
+
+      {/* --- Job summary --- */}
+      <Card className="gap-0 py-0 shadow-soft">
+        <div className="flex flex-wrap items-start gap-4 p-6">
+          <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-indigo-50 font-brand text-lg font-bold text-indigo-600">
+            {job.title.trim()[0]?.toUpperCase() ?? "J"}
+          </span>
+          <div className="min-w-0 flex-1">
+            <h1 className="font-brand text-xl font-bold break-words sm:text-2xl">{job.title}</h1>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              {role ? `You are the ${role === "freelancer" ? "developer" : role}` : "Open listing"} · created {fmtDate(job.createdAt)}
+            </p>
+          </div>
           <StatusBadge status={job.status} />
         </div>
-      </div>
+        <div className="grid grid-cols-2 gap-px border-t border-border bg-border sm:grid-cols-4">
+          <Meta icon={Lock} label={LOCKED.includes(job.status) ? "Escrowed" : "Amount"} value={`${job.amountUsdc} USDC`} />
+          <Meta
+            icon={CalendarDays}
+            label={`Due ${new Date(job.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`}
+            value={TERMINAL.includes(job.status) ? "Completed" : daysLeft >= 0 ? `in ${daysLeft} day${daysLeft === 1 ? "" : "s"}` : `${-daysLeft}d overdue`}
+          />
+          <Meta icon={Globe2} label="Visibility" value={job.visibility === "public" ? "Public listing" : "Invite only"} />
+          <Meta icon={UserRound} label="Developer" value={job.freelancerEmail ?? (job.visibility === "public" ? `${job.applicationCount} applied` : "—")} />
+        </div>
+      </Card>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
         <div className="min-w-0 space-y-6">
           {/* --- Open public listing --- */}
           {job.status === "open" && role === "client" && <ApplicationsPanel detail={detail} />}
@@ -94,10 +120,10 @@ function JobView() {
           {role === "freelancer" && job.status === "awaiting_funding" && <Waiting text="Waiting for the client to fund the escrow. Don't start work until it's funded." />}
           {role === "freelancer" && job.status === "funded" && <SubmitDeliverable detail={detail} />}
           {role === "client" && job.status === "funded" && (
-            <Card>
+            <Card className="shadow-soft">
               <CardHeader>
                 <CardTitle>Escrow funded</CardTitle>
-                <CardDescription>The freelancer can now submit. You'll see the AI verdict and reasoning here.</CardDescription>
+                <CardDescription>The developer can now submit. You&apos;ll see the AI verdict and reasoning here.</CardDescription>
               </CardHeader>
               <CardContent>
                 <NonDeliveryDispute detail={detail} />
@@ -105,35 +131,35 @@ function JobView() {
             </Card>
           )}
           {job.status === "submitted" && <VerificationStatus detail={detail} />}
+          {job.status === "proposed" && <ProposalPanel detail={detail} />}
+          {job.status === "challenged" && <ChallengePanel detail={detail} />}
           {role === "client" && ["open", "pending_acceptance", "awaiting_funding"].includes(job.status) && <CancelJob detail={detail} />}
 
           {/* --- Outcome banners --- */}
-          {job.status === "released" && (
-            <Alert className="border-brand-teal/40">
-              <Scale className="h-4 w-4 text-brand-teal" />
-              <AlertTitle>Escrow released to the freelancer</AlertTitle>
-              <AlertDescription>
-                The AI verified every acceptance criterion at or above the confidence threshold. <TxLink hash={job.lastChainAction?.txHash} label="release transaction" />
-              </AlertDescription>
-            </Alert>
-          )}
+          {(job.status === "released" || job.status === "refunded") && <SettledBanner detail={detail} />}
           {job.status === "disputed" && job.dispute && (
-            <Alert className="border-brand-orange/50">
+            <Alert className="border-orange-200 bg-orange-50/60">
               <AlertTriangle className="h-4 w-4 text-brand-orange" />
-              <AlertTitle>In dispute — awaiting admin resolution</AlertTitle>
+              <AlertTitle>In dispute: awaiting admin resolution</AlertTitle>
               <AlertDescription>
                 <p>
-                  {job.dispute.source === "ai" ? "The AI check did not meet the release rule: " : `Opened by ${job.dispute.source}: `}
+                  {job.dispute.source === "jury"
+                    ? "The AI jury was split: "
+                    : job.dispute.source === "timeout"
+                      ? "Escalated by the on-chain liveness timeout: "
+                      : job.dispute.source === "ai"
+                        ? "The AI check did not meet the release rule: "
+                        : `Opened by ${job.dispute.source}: `}
                   {job.dispute.reason}
                 </p>
-                {job.dispute.source === "ai" && <p className="mt-1">The full AI reasoning and unmatched criteria are shown below.</p>}
+                {job.dispute.source === "jury" && <p className="mt-1">Each juror&apos;s vote and reasoning is shown below.</p>}
               </AlertDescription>
             </Alert>
           )}
           {job.resolution && (
-            <Alert className={job.resolution.outcome === "release" ? "border-brand-teal/40" : ""}>
+            <Alert className={job.resolution.outcome === "release" ? "border-emerald-200 bg-emerald-50/60" : ""}>
               <Gavel className="h-4 w-4" />
-              <AlertTitle>Dispute resolved: {job.resolution.outcome === "release" ? "paid to the freelancer" : "refunded to the client"}</AlertTitle>
+              <AlertTitle>Dispute resolved: {job.resolution.outcome === "release" ? "paid to the developer" : "refunded to the client"}</AlertTitle>
               <AlertDescription>
                 <p className="whitespace-pre-wrap">{job.resolution.notes}</p>
                 <p className="mt-1 text-xs">
@@ -143,10 +169,12 @@ function JobView() {
             </Alert>
           )}
 
+          {ruling && ruling.status === "completed" && <JuryRulingCard ruling={ruling} onchainHash={onchainRulingHash} />}
+
           {current && job.status !== "submitted" && (
-            <Card>
+            <Card className="shadow-soft">
               <CardHeader>
-                <CardTitle>Latest AI verdict</CardTitle>
+                <CardTitle>{job.challenge ? "First AI verdict (under appeal)" : "AI verdict"}</CardTitle>
               </CardHeader>
               <CardContent>
                 <VerdictCard v={current} current />
@@ -154,47 +182,63 @@ function JobView() {
             </Card>
           )}
 
-          <TermsCard job={job} />
-          <SubmissionsCard submissions={detail.submissions} verifications={detail.verifications} currentId={job.currentSubmissionId} />
+          {/* --- Details, in tabs as in the design --- */}
+          <Card className="shadow-soft">
+            <CardContent>
+              <Tabs defaultValue={role ? "timeline" : "terms"}>
+                <TabsList className="mb-4">
+                  {role && <TabsTrigger value="timeline">Timeline</TabsTrigger>}
+                  <TabsTrigger value="terms">Terms</TabsTrigger>
+                  {role && <TabsTrigger value="submission">Submission ({detail.submissions.length})</TabsTrigger>}
+                  {role && COMPLAINABLE.includes(job.status) && <TabsTrigger value="reviews">Reviews ({detail.reviews.length})</TabsTrigger>}
+                </TabsList>
+                {role && (
+                  <TabsContent value="timeline">
+                    <Timeline events={detail.events} bare />
+                  </TabsContent>
+                )}
+                <TabsContent value="terms">
+                  <TermsCard job={job} bare />
+                </TabsContent>
+                {role && (
+                  <TabsContent value="submission">
+                    <SubmissionsCard submissions={detail.submissions} verifications={detail.verifications} currentId={job.currentSubmissionId} bare />
+                  </TabsContent>
+                )}
+                {role && COMPLAINABLE.includes(job.status) && (
+                  <TabsContent value="reviews" className="space-y-6">
+                    <section className="space-y-3">
+                      <h3 className="font-medium">Reviews</h3>
+                      {detail.reviews.map((r) => (
+                        <ReviewItem key={r.id} r={r} />
+                      ))}
+                      {TERMINAL.includes(job.status) ? (
+                        !myReview && <ReviewForm detail={detail} counterpart={counterpart} />
+                      ) : (
+                        <p className="text-sm text-muted-foreground">Reviews open once the job is completed.</p>
+                      )}
+                    </section>
+                    <section className="space-y-3 border-t border-border pt-5">
+                      <h3 className="font-medium">My complaints ({detail.complaints.length})</h3>
+                      <p className="text-xs text-muted-foreground">Complaints go privately to Yorse admins.</p>
+                      {detail.complaints.map((c) => (
+                        <ComplaintItem key={c.id} c={c} />
+                      ))}
+                      <ComplaintForm detail={detail} />
+                    </section>
+                  </TabsContent>
+                )}
+              </Tabs>
+            </CardContent>
+          </Card>
 
-          {/* --- Complaints & reviews --- */}
-          {COMPLAINABLE.includes(job.status) && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Feedback</CardTitle>
-                <CardDescription>Reviews are visible to both parties. Complaints go privately to Yorse admins.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Tabs defaultValue={TERMINAL.includes(job.status) ? "review" : "complaint"}>
-                  <TabsList>
-                    <TabsTrigger value="review">Reviews ({detail.reviews.length})</TabsTrigger>
-                    <TabsTrigger value="complaint">My complaints ({detail.complaints.length})</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="review" className="space-y-3 pt-3">
-                    {detail.reviews.map((r) => (
-                      <ReviewItem key={r.id} r={r} />
-                    ))}
-                    {TERMINAL.includes(job.status) ? (
-                      !myReview && <ReviewForm detail={detail} counterpart={counterpart} />
-                    ) : (
-                      <p className="text-sm text-muted-foreground">Reviews open once the job is completed.</p>
-                    )}
-                  </TabsContent>
-                  <TabsContent value="complaint" className="space-y-3 pt-3">
-                    {detail.complaints.map((c) => (
-                      <ComplaintItem key={c.id} c={c} />
-                    ))}
-                    <ComplaintForm detail={detail} />
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
-          )}
+          {role && <ProofCard detail={detail} />}
         </div>
 
         <aside className="space-y-6">
+          {role && <AiVerificationCard detail={detail} />}
           {detail.client && (
-            <Card className="gap-3">
+            <Card className="gap-3 shadow-soft">
               <CardHeader>
                 <CardTitle className="text-sm">Posted by</CardTitle>
               </CardHeader>
@@ -204,9 +248,24 @@ function JobView() {
             </Card>
           )}
           {role && <OnchainCard detail={detail} />}
-          {role && <Timeline events={detail.events} />}
         </aside>
       </div>
+    </div>
+  )
+}
+
+function Meta({ icon: Icon, label, value }: { icon: typeof Lock; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-3 bg-card px-5 py-4">
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-brand-forest">
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-semibold" title={value}>
+          {value}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">{label}</span>
+      </span>
     </div>
   )
 }
@@ -230,7 +289,7 @@ function VisitorApply({ detail }: { detail: JobDetail }) {
   }
   const applied = mine && mine.status !== "withdrawn"
   return (
-    <Card className="border-brand-teal/30">
+    <Card className="border-brand-green/30 shadow-soft">
       <CardHeader>
         <CardTitle>{applied ? "You applied to this job" : "Open to applications"}</CardTitle>
         <CardDescription>
@@ -242,7 +301,7 @@ function VisitorApply({ detail }: { detail: JobDetail }) {
       <CardContent className="flex flex-wrap items-center gap-3">
         {applied ? (
           <>
-            <Badge variant="outline" className="border-brand-teal/40 text-brand-teal">
+            <Badge variant="outline" className="border-brand-green/40 text-brand-green">
               {mine!.status}
             </Badge>
             <p className="text-sm text-muted-foreground">Applied {fmtDate(mine!.createdAt)}</p>
@@ -257,7 +316,7 @@ function VisitorApply({ detail }: { detail: JobDetail }) {
 
 function Waiting({ text }: { text: string }) {
   return (
-    <Alert>
+    <Alert className="bg-card shadow-soft">
       <AlertDescription>{text}</AlertDescription>
     </Alert>
   )
