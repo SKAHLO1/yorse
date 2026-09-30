@@ -12,11 +12,12 @@ app/ …       Next.js frontend: landing, auth, dashboard, jobs, admin panel
 
 | Concern | Where it lives |
 | --- | --- |
-| USDC + job state (Funded → Submitted → Released / Disputed → ResolvedRelease / ResolvedRefund) | `Escrow.sol` on-chain |
+| USDC + job state, challenge windows, bonds, verdict/ruling hashes | `Escrow.sol` on-chain |
 | Jobs, submissions, AI verdicts, events, complaints, reviews | Firestore (written only by the backend via Admin SDK) |
-| `markSubmitted` / `release` / `dispute` / `refund` | Backend relayer key only (`backend/src/chain/escrow.ts`) |
-| AI verdict | `backend/src/ai/*`: returns JSON only, never touches the chain |
-| Release decision | `backend/src/ai/decision.ts`: verdict = release **and** confidence ≥ 0.85 **and** every criterion confirmed, otherwise dispute |
+| `markSubmitted` / `proposeVerdict` / `escalate` / `resolveChallenge` / `dispute` / `resolve` | Backend relayer key only (`backend/src/chain/escrow.ts`) |
+| `challenge` (bonded) / `finalize` / `escalateStale` | The parties, or anyone: no Yorse permission needed |
+| AI verdict and AI jury | `backend/src/ai/*`: return JSON only, never touch the chain |
+| First decision | `backend/src/ai/decision.ts`: propose **release** (verdict release, confidence ≥ 0.85, every criterion confirmed), propose **refund** (confident dispute naming an unmet criterion), otherwise **escalate** to the jury |
 
 Browsers never read or write Firestore directly (`firestore.rules` denies everything). Every API call carries a Firebase ID token that the backend verifies, and all data is scoped to that user. Admins are identified by the Firebase custom claim `admin: true`.
 
@@ -29,18 +30,26 @@ A client either lists a job **publicly** (it appears in every user's live feed a
 2. **Freelancer** accepts the terms.
 3. **Client** approves USDC and calls `fund()` from their linked wallet. The backend then verifies that the on-chain client, freelancer and amount match the terms.
 4. **Freelancer** submits a link, a file reference and a description. The backend then:
-   - calls `markSubmitted()`;
+   - calls `markSubmitted(deliverableHash)`, committing to the exact submission;
    - fetches the link as evidence (with SSRF protection);
-   - runs the AI check;
-   - applies the decision rule, then calls `release()` or `dispute()`.
-5. **Disputes**: an admin reviews the full history and calls `release()` or `refund()` through the backend.
+   - runs the AI check and applies the decision rule;
+   - hashes the full verdict record and calls `proposeVerdict(outcome, verdictHash)` or `escalate(verdictHash)`. **No money moves yet.**
+5. **Optimistic AI arbitration** (the same propose → challenge → resolve shape Arbitrum uses for fraud proofs):
+   - **Challenge window** (`CHALLENGE_WINDOW_SECONDS`, 3 min on the testnet deploy, 48 h by default): only the party the proposal goes against may `challenge()` it, from their own wallet, by posting a bond (10% of the job).
+   - **Unchallenged:** anyone can call `finalize()` once the window ends. The backend keeper does it automatically, but the relayer isn't needed.
+   - **Challenged or AI unsure:** both sides submit one argument each. Then an **AI jury** of three different models rules independently and in parallel. A strict majority of the whole panel decides, and the ruling hash goes on-chain with `resolveChallenge()`. A failed juror counts against a majority, so an outage can only send a case to a human, never decide it.
+   - **Bond:** returned if the jury overturns the proposal; paid to the other side if the jury upholds it.
+   - **Split jury** → `dispute()` → a human admin calls `resolve(outcome, rulingHash)`, which settles the bond by the same rule.
+   - **Liveness:** if the relayer leaves a job Submitted or Challenged for longer than `relayerTimeout`, **anyone** can call `escalateStale()` to hand it to human review. A dead backend can never strand funds.
 6. **Non-delivery**: the client (or an admin) can dispute a funded job before any submission.
-7. **Feedback**: complaints (private to the filer and admins) and reviews (one per party) open once a job is completed. Admins moderate both.
-8. **Ratings**: published reviews roll up into a public rating for each side - `ratingAsFreelancer` and `ratingAsClient`. Only completed jobs produce reviews, hidden reviews are excluded, and the average is recomputed whenever a review is posted or moderated. Anyone can open `/u/<uid>` to see a person's rating, completed-job counts and the reviews behind the score. Profiles never expose email or wallet addresses.
+7. **Verifiable record**: the job page recomputes `keccak256` of each stored record (deliverable, AI verdict, jury ruling) in the browser and compares it with the hash in `Escrow.getJob()`.
+8. **Feedback**: complaints (private to the filer and admins) and reviews (one per party) open once a job is completed. Admins moderate both.
+9. **Ratings**: published reviews roll up into a public rating for each side - `ratingAsFreelancer` and `ratingAsClient`. Only completed jobs produce reviews, hidden reviews are excluded, and the average is recomputed whenever a review is posted or moderated. Anyone can open `/u/<uid>` to see a person's rating, completed-job counts and the reviews behind the score. Profiles never expose email or wallet addresses.
 
 Failures are surfaced, never swallowed:
 - **AI outage:** the job stays locked, and the verdict record holds the error and every provider attempt. "Retry" re-runs the check.
-- **Chain failure after a verdict:** the verdict is kept. "Retry" re-sends only the transaction; the AI is never asked again.
+- **Chain failure after a verdict or ruling:** the record is kept. "Retry" re-sends only the transaction; the AI or jury is never asked again.
+- **Jury outage:** nothing is decided; "Reconvene the jury" retries, or an admin can take the case.
 
 ---
 
