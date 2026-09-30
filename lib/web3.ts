@@ -1,14 +1,35 @@
-import { createConfig, http } from "wagmi"
-import { injected } from "wagmi/connectors"
+import { createConfig, http, type CreateConnectorFn } from "wagmi"
+import { injected, walletConnect } from "wagmi/connectors"
 import { arbitrumSepolia } from "wagmi/chains"
 
 export const CHAIN = arbitrumSepolia // Arbitrum Sepolia only. Never mainnet.
 export const CIRCLE_USDC = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d" as const
 export const EXPLORER = "https://sepolia.arbiscan.io"
 
+/** From cloud.reown.com (formerly WalletConnect Cloud). WalletConnect is offered only when this is set. */
+export const WALLETCONNECT_PROJECT_ID = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() || null
+
+const connectors: CreateConnectorFn[] = [injected()]
+// Browser only: the WalletConnect provider opens IndexedDB as soon as it is created, which breaks server prerendering.
+if (WALLETCONNECT_PROJECT_ID && typeof window !== "undefined") {
+  connectors.push(
+    walletConnect({
+      projectId: WALLETCONNECT_PROJECT_ID,
+      showQrModal: true,
+      metadata: {
+        name: "Yorse",
+        description: "AI-verified USDC escrow on Arbitrum",
+        url: typeof window !== "undefined" ? window.location.origin : "https://yorse.app",
+        icons: [typeof window !== "undefined" ? `${window.location.origin}/icon.svg` : "https://yorse.app/icon.svg"],
+      },
+      qrModalOptions: { themeMode: "light", themeVariables: { "--wcm-accent-color": "#16a34a", "--wcm-z-index": "1000" } },
+    }),
+  )
+}
+
 export const wagmiConfig = createConfig({
   chains: [arbitrumSepolia],
-  connectors: [injected()],
+  connectors,
   transports: {
     [arbitrumSepolia.id]: http(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL || undefined),
   },
