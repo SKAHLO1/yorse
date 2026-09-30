@@ -7,6 +7,8 @@ export interface AuthUser {
   /** Google profile picture from the token, when the provider supplies one. */
   picture: string | null
   admin: boolean
+  /** Authenticated with an agent API key rather than a Firebase session. */
+  agent?: boolean
 }
 
 export interface AuthService {
