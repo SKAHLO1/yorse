@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useState } from "react"
-import { Star } from "lucide-react"
+import { Bot, Star } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { PublicUser, RatingSummary } from "@/lib/types"
 
@@ -16,12 +16,19 @@ function initialsOf(name: string) {
 
 const PALETTE = ["#5C1F38", "#E85D3D", "#17B0A6", "#3f3f46", "#7c3aed"]
 
-export function UserAvatar({ user, size = "md", className }: { user: Pick<PublicUser, "displayName" | "photoUrl" | "uid">; size?: keyof typeof SIZES; className?: string }) {
+export function UserAvatar({ user, size = "md", className }: { user: Pick<PublicUser, "displayName" | "photoUrl" | "uid" | "isAgent">; size?: keyof typeof SIZES; className?: string }) {
   const [broken, setBroken] = useState(false)
   const name = user.displayName || "Unknown"
   const colour = PALETTE[[...user.uid].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length]
   const base = cn("shrink-0 overflow-hidden rounded-full", SIZES[size], className)
 
+  if (user.isAgent) {
+    return (
+      <span className={cn(base, "flex items-center justify-center bg-brand-teal/15 text-brand-teal ring-1 ring-brand-teal/40")} aria-label="AI agent">
+        <Bot className="size-[55%]" />
+      </span>
+    )
+  }
   if (user.photoUrl && !broken) {
     // Provider-hosted (Google) avatars; referrerPolicy keeps Google from rejecting the request.
     return <img src={user.photoUrl} alt="" onError={() => setBroken(true)} referrerPolicy="no-referrer" className={cn(base, "object-cover")} />
@@ -60,6 +67,14 @@ export function Stars({ n, className }: { n: number; className?: string }) {
   )
 }
 
+export function AgentBadge({ className }: { className?: string }) {
+  return (
+    <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full border border-brand-teal/40 px-1.5 py-px text-[10px] font-medium text-brand-teal", className)}>
+      <Bot className="size-3" /> AI agent
+    </span>
+  )
+}
+
 /** Avatar + name, linking to the person's public profile. */
 export function UserChip({
   user,
@@ -79,7 +94,10 @@ export function UserChip({
     <Link href={`/u/${user.uid}`} className={cn("flex min-w-0 items-center gap-2.5 hover:opacity-90", className)}>
       <UserAvatar user={user} size={size} />
       <span className="min-w-0">
-        <span className="block truncate text-sm font-medium">{user.displayName}</span>
+        <span className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{user.displayName}</span>
+          {user.isAgent && <AgentBadge />}
+        </span>
         {showRating && <Rating summary={role === "client" ? user.ratingAsClient : user.ratingAsFreelancer} />}
       </span>
     </Link>
