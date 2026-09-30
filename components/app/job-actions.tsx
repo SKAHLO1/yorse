@@ -153,7 +153,10 @@ export function FundEscrow({ detail }: { detail: JobDetail }) {
 
   const busy = phase !== "idle"
   return (
-    <ActionCard title={`Fund escrow · ${job.amountUsdc} USDC`} description={`USDC is locked in the Yorse escrow contract until the AI verifies the work or an admin resolves a dispute. Pays ${shortAddr(job.freelancerWallet)}.`}>
+    <ActionCard
+      title={`Fund escrow · ${job.amountUsdc} USDC`}
+      description={`USDC is locked in the Yorse escrow contract. The AI's verdict can be challenged by either side before it settles. Pays ${shortAddr(job.freelancerWallet)}.`}
+    >
       {!isConnected ? (
         <p className="text-sm text-muted-foreground">Connect your wallet ({shortAddr(job.clientWallet)}) using the top bar.</p>
       ) : chainId !== CHAIN.id ? (
@@ -223,7 +226,14 @@ export function SubmitDeliverable({ detail }: { detail: JobDetail }) {
         body: { deliverableUrl: deliverableUrl || null, fileReference: fileReference || null, description, notes: notes || null },
       })
       const v = r.verification
-      if (v.ok) toast[v.decision === "release" ? "success" : "warning"](v.decision === "release" ? "Verified — escrow released to you" : "Moved to dispute. See the AI reasoning below.")
+      if (v.ok)
+        toast[v.decision === "release" ? "success" : "warning"](
+          v.decision === "release"
+            ? "The AI proposes releasing the funds to you. They settle when the challenge window ends."
+            : v.decision === "refund"
+              ? "The AI proposes a refund. You can challenge it before the window closes."
+              : "The AI wasn't confident, so the AI jury will decide. Add your argument below.",
+        )
       else toast.error(`Submission recorded, but ${v.stage === "ai" ? "AI verification" : "the on-chain step"} failed: ${v.error}`)
       await refresh()
     } catch (err) {
@@ -278,7 +288,7 @@ export function VerificationStatus({ detail, admin = false }: { detail: JobDetai
   const refresh = useRefresh(job.id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const chainFailed = job.pendingDecision && job.lastChainAction?.state === "failed"
+  const chainFailed = !!job.pendingDecision && job.lastChainAction?.state === "failed"
   const aiFailed = job.verification.state === "error"
   const running = job.verification.state === "running"
 
@@ -297,7 +307,7 @@ export function VerificationStatus({ detail, admin = false }: { detail: JobDetai
   }
 
   return (
-    <ActionCard title="Verification" description="The deliverable is recorded on-chain; escrow stays locked until a verdict is applied.">
+    <ActionCard title="Verification" description="The deliverable and its content hash are recorded on-chain. Escrow stays locked; the AI's verdict will be posted as a challengeable proposal.">
       {running && !busy && (
         <p className="flex items-center gap-2 text-sm">
           <Bot className="size-4 animate-pulse text-brand-teal" /> AI verification in progress…
@@ -321,7 +331,7 @@ export function VerificationStatus({ detail, admin = false }: { detail: JobDetai
       {(aiFailed || chainFailed || (!running && job.verification.state === "idle")) && (
         <Button onClick={retry} disabled={busy}>
           {busy && <Loader2 className="size-4 animate-spin" />}
-          {chainFailed ? `Retry ${job.pendingDecision} transaction` : "Run verification again"}
+          {chainFailed ? "Retry the on-chain step" : "Run verification again"}
         </Button>
       )}
     </ActionCard>
