@@ -48,6 +48,12 @@ importers:
       '@types/supertest':
         specifier: ^7.2.1
         version: 7.2.1
+      '@zerodev/ecdsa-validator':
+        specifier: ^5.4.9
+        version: 5.4.9(@zerodev/sdk@5.5.10(viem@2.56.8(typescript@7.0.2)(zod@4.6.5)))(viem@2.56.8(typescript@7.0.2)(zod@4.6.5))
+      '@zerodev/sdk':
+        specifier: ^5.5.10
+        version: 5.5.10(viem@2.56.8(typescript@7.0.2)(zod@4.6.5))
       supertest:
         specifier: ^7.2.2
         version: 7.2.2
@@ -669,6 +675,17 @@ packages:
 
   '@vitest/spy@5.0.1':
     resolution: {integrity: sha512-rbto/mF/SGERxEgYOek7Xm6B9b+y+mVoo+f4b2LymYO8zM1b7uB5nHuhVMTP2hxdzgxvGiZYGxGIaMvL5y180Q==}
+
+  '@zerodev/ecdsa-validator@5.4.9':
+    resolution: {integrity: sha512-9NVE8/sQIKRo42UOoYKkNdmmHJY8VlT4t+2MHD2ipLg21cpbY9fS17TGZh61+Bl3qlqc8pP23I6f89z9im7kuA==}
+    peerDependencies:
+      '@zerodev/sdk': ^5.4.13
+      viem: ^2.28.0
+
+  '@zerodev/sdk@5.5.10':
+    resolution: {integrity: sha512-WVyj2XR9F6zK2GdXrvappx7yo6zoJ46cWe42dOIArp3xDjFBninjA4O1O94MwohB0G+yFqtXNsEU+WxdE67SgQ==}
+    peerDependencies:
+      viem: ^2.28.0
 
   abitype@1.2.3:
     resolution: {integrity: sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==}
@@ -2337,6 +2354,16 @@ snapshots:
       vite: 8.3.0(@types/node@22.20.4)(esbuild@0.28.2)(tsx@4.23.13)
 
   '@vitest/spy@5.0.1': {}
+
+  '@zerodev/ecdsa-validator@5.4.9(@zerodev/sdk@5.5.10(viem@2.56.8(typescript@7.0.2)(zod@4.6.5)))(viem@2.56.8(typescript@7.0.2)(zod@4.6.5))':
+    dependencies:
+      '@zerodev/sdk': 5.5.10(viem@2.56.8(typescript@7.0.2)(zod@4.6.5))
+      viem: 2.56.8(typescript@7.0.2)(zod@4.6.5)
+
+  '@zerodev/sdk@5.5.10(viem@2.56.8(typescript@7.0.2)(zod@4.6.5))':
+    dependencies:
+      semver: 7.8.5
+      viem: 2.56.8(typescript@7.0.2)(zod@4.6.5)
 
   abitype@1.2.3(typescript@7.0.2)(zod@4.6.5):
     optionalDependencies:
