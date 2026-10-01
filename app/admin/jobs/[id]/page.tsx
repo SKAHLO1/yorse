@@ -51,7 +51,7 @@ function AdminJob() {
   const canAdminDispute =
     job.status === "funded" ||
     (job.status === "submitted" && (job.verification.state === "error" || chainFailed)) ||
-    (job.status === "challenged" && (job.jury.state === "error" || chainFailed))
+    (job.status === "challenged" && job.jury.state !== "running")
   const ruling = detail.rulings.find((r) => r.id === job.jury.rulingId && r.status === "completed")
 
   return (
@@ -183,6 +183,18 @@ function ResolvePanel({ detail }: { detail: JobDetail }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {job.challenge && (job.challenge.arguments.client || job.challenge.arguments.freelancer) && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {(["client", "freelancer"] as const).map((r) => (
+              <div key={r} className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {r === "client" ? "Client" : "Developer"}&apos;s argument {job.challenge!.challengerRole === r && "(challenger)"}
+                </div>
+                <p className="whitespace-pre-wrap">{job.challenge!.arguments[r] ?? "Not submitted."}</p>
+              </div>
+            ))}
+          </div>
+        )}
         <RadioGroup value={outcome} onValueChange={(v) => setOutcome(v as "release" | "refund")} className="grid gap-2 sm:grid-cols-2">
           <Label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 has-[[data-state=checked]]:border-brand-teal">
             <RadioGroupItem value="release" className="mt-0.5" />
@@ -222,14 +234,19 @@ function AdminDispute({ detail }: { detail: JobDetail }) {
   const [reason, setReason] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const appeal = detail.job.status === "challenged"
   return (
-    <Card>
+    <Card className={appeal ? "border-brand-orange/40 shadow-soft" : "shadow-soft"}>
       <CardHeader>
-        <CardTitle>Move to dispute</CardTitle>
-        <CardDescription>For non-delivery or a submission the AI cannot evaluate. Calls escrow.dispute(); you can then resolve it.</CardDescription>
+        <CardTitle>{appeal ? "Take over this appeal" : "Move to dispute"}</CardTitle>
+        <CardDescription>
+          {appeal
+            ? "Overrule the process before the AI jury convenes. The job becomes a dispute, the jury never rules, and you decide release or refund. The challenge bond then settles by your decision: returned if you overturn the AI's proposal, otherwise paid to the other side."
+            : "For non-delivery or a submission the AI cannot evaluate. Calls escrow.dispute(); you can then resolve it."}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" />
+        <Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder={appeal ? "Why you are taking over (visible to both parties)" : "Reason"} />
         {error && <p className="text-sm text-destructive-foreground">{error}</p>}
         <Button
           variant="outline"
@@ -247,7 +264,7 @@ function AdminDispute({ detail }: { detail: JobDetail }) {
             }
           }}
         >
-          {busy ? "Sending…" : "Open dispute"}
+          {busy ? "Sending…" : appeal ? "Take over as admin" : "Open dispute"}
         </Button>
       </CardContent>
     </Card>
