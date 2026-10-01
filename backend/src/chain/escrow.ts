@@ -83,7 +83,8 @@ export interface EscrowChain {
   readonly escrowAddress: Address
   readonly relayerAddress: Address
   readonly params: ArbitrationParams
-  getJob(onchainJobId: Hex): Promise<OnchainJob>
+  /** Reads a job from `escrow` (default: the current deployment). Jobs stay on the escrow that funded them. */
+  getJob(onchainJobId: Hex, escrow?: Address): Promise<OnchainJob>
   /** Sends a relayer call, waits for the receipt, and throws with a readable reason on revert. */
   send(onchainJobId: Hex, call: RelayerCall): Promise<{ txHash: Hex }>
   /** Confirms a client/party-submitted tx succeeded and targeted the escrow contract. */
@@ -141,6 +142,27 @@ function callArgs(jobId: Hex, call: RelayerCall): readonly unknown[] {
   }
 }
 
+/** getJob of the original (pre-arbitration) escrow, kept so its jobs stay readable. */
+const escrowV1GetJobAbi = [
+  {
+    type: "function",
+    name: "getJob",
+    stateMutability: "view",
+    inputs: [{ name: "jobId", type: "bytes32" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "client", type: "address" },
+          { name: "freelancer", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "state", type: "uint8" },
+        ],
+      },
+    ],
+  },
+] as const
+
 export async function createEscrowChain(opts: {
   rpcUrl: string
   relayerPrivateKey: Hex
@@ -191,13 +213,16 @@ export async function createEscrowChain(opts: {
     return run
   }
 
-  const getJob = async (onchainJobId: Hex): Promise<OnchainJob> => {
-    const j = await publicClient.readContract({
-      address: escrowAddress,
-      abi: escrowAbi,
-      functionName: "getJob",
-      args: [onchainJobId],
-    })
+  const getJob = async (onchainJobId: Hex, escrow: Address = escrowAddress): Promise<OnchainJob> => {
+    let j
+    try {
+      j = await publicClient.readContract({ address: escrow, abi: escrowAbi, functionName: "getJob", args: [onchainJobId] })
+    } catch (err) {
+      // The first (v1) deployment returned a 4-field record; its states share the same first 7 values.
+      if (isAddressEqual(escrow, escrowAddress)) throw err
+      const v1 = await publicClient.readContract({ address: escrow, abi: escrowV1GetJobAbi, functionName: "getJob", args: [onchainJobId] })
+      return { ...emptyOnchainJob(), client: v1.client, freelancer: v1.freelancer, amount: v1.amount, state: ONCHAIN_STATES[v1.state] }
+    }
     return {
       client: j.client,
       freelancer: j.freelancer,

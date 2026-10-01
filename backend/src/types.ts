@@ -112,6 +112,11 @@ export interface Job {
   applicationCount: number
   status: JobStatus
   fundTxHash: string | null
+  /**
+   * The escrow contract that holds this job's funds, recorded at funding. Null before funding
+   * (the current deployment is used). Keeps old jobs readable after the contract is redeployed.
+   */
+  escrowAddress?: `0x${string}` | null
   currentSubmissionId: string | null
   verification: {
     state: "idle" | "running" | "error" | "done"

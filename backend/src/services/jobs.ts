@@ -99,6 +99,10 @@ export function createJobService(deps: Deps) {
     return { job, role }
   }
 
+  /** The escrow holding this job: fixed at funding, so a later redeploy never orphans it. */
+  const escrowOf = (job: Job) => job.escrowAddress ?? chain.escrowAddress
+  const readOnchain = (job: Job) => chain.getJob(job.onchainJobId, escrowOf(job))
+
   function requireStatus(job: Job, ...allowed: JobStatus[]) {
     if (!allowed.includes(job.status)) {
       throw conflict(`This action is not allowed while the job is "${job.status}"`, { status: job.status, allowed })
@@ -108,6 +112,9 @@ export function createJobService(deps: Deps) {
   /** Runs a relayer call, recording success/failure on the job. Throws a 502 on failure (never swallowed). */
   async function relayerCall(job: Job, call: RelayerCall, actor: Actor) {
     const action = call.fn
+    if (!isAddressEqual(escrowOf(job), chain.escrowAddress)) {
+      throw conflict(`This job's funds are held by an earlier escrow deployment (${escrowOf(job)}); this backend only signs for ${chain.escrowAddress}.`)
+    }
     await store.jobs.update(job.id, { lastChainAction: chainAction(action, "pending", null, null), updatedAt: iso() })
     try {
       const { txHash } = await chain.send(job.onchainJobId, call)
@@ -275,6 +282,7 @@ export function createJobService(deps: Deps) {
       applicationCount: 0,
       status: isPublic ? "open" : "pending_acceptance",
       fundTxHash: null,
+      escrowAddress: null,
       currentSubmissionId: null,
       verification: { state: "idle", error: null, startedAt: null, verificationId: null },
       pendingDecision: null,
@@ -345,7 +353,7 @@ export function createJobService(deps: Deps) {
       }
     }
     if (!job.freelancerWallet) throw conflict("Choose a developer before funding this job")
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     const problems: string[] = []
     if (onchain.state !== "Funded") problems.push(`on-chain state is ${onchain.state}, expected Funded`)
     if (onchain.state !== "None") {
@@ -360,7 +368,7 @@ export function createJobService(deps: Deps) {
 
     const updated = await store.jobs.transition(id, (j) => {
       requireStatus(j, "awaiting_funding")
-      return { status: "funded", fundTxHash: txHash ?? null, updatedAt: iso() }
+      return { status: "funded", fundTxHash: txHash ?? null, escrowAddress: chain.escrowAddress, updatedAt: iso() }
     })
     await logEvent(id, "funded", `Escrow funded with ${job.amountUsdc} USDC`, { uid: user.uid, role: "client" }, { txHash })
     return updated
@@ -379,6 +387,9 @@ export function createJobService(deps: Deps) {
     // Claim the job so two concurrent submissions can't both call markSubmitted.
     const job = await store.jobs.transition(id, (j) => {
       requireStatus(j, "funded")
+      if (!isAddressEqual(escrowOf(j), chain.escrowAddress)) {
+        throw conflict(`This job's funds are held by an earlier escrow deployment (${escrowOf(j)}); this backend only signs for ${chain.escrowAddress}.`)
+      }
       if (j.lastChainAction?.type === "markSubmitted" && j.lastChainAction.state === "pending") {
         throw conflict("A submission is already being recorded on-chain")
       }
@@ -406,7 +417,7 @@ export function createJobService(deps: Deps) {
     await logEvent(id, "submission_received", "Freelancer submitted a deliverable", { uid: user.uid, role: "freelancer" }, { submissionId: submission.id })
 
     // Record on-chain. If a previous attempt already moved it to Submitted, don't send again.
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     let txHash: string
     if (onchain.state === "Funded") {
       txHash = await relayerCall(job, { fn: "markSubmitted", deliverableHash: submission.commitment.hash }, { uid: user.uid, role: "freelancer" })
@@ -563,7 +574,7 @@ export function createJobService(deps: Deps) {
     const v = await store.verifications.get(job.id, verificationId)
     const verdictHash = v?.commitment?.hash
     if (!verdictHash) throw new HttpError(500, "internal", "Verdict commitment is missing")
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     const call: RelayerCall = action === "escalate" ? { fn: "escalate", verdictHash } : { fn: "proposeVerdict", outcome: action, verdictHash }
     let txHash: string
     if (onchain.state === "Submitted") {
@@ -601,7 +612,7 @@ export function createJobService(deps: Deps) {
       })
       await logEvent(job.id, "escalated", "The AI was not confident, so the case goes to the AI jury. Both sides can submit an argument first.", { uid: null, role: "system" }, { txHash, verificationId })
     } else {
-      const after = await chain.getJob(job.onchainJobId)
+      const after = await readOnchain(job)
       const deadline = toIso(after.challengeDeadline)
       await store.jobs.update(job.id, {
         status: "proposed",
@@ -639,7 +650,7 @@ export function createJobService(deps: Deps) {
     const own = job.lastChainAction
     if (own?.state === "pending") return job
     if (own?.state === "confirmed" && Date.parse(iso()) - Date.parse(own.at) < OWN_ACTION_GRACE_MS) return job
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     const system = { uid: null, role: "system" as const }
 
     if (job.status === "proposed" && onchain.state === "Challenged") {
@@ -726,7 +737,7 @@ export function createJobService(deps: Deps) {
         throw upstream("chain_error", (err as Error).message, { txHash: input.txHash })
       }
     }
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     const wallet = role === "client" ? job.clientWallet : job.freelancerWallet!
     if (onchain.state !== "Challenged" || !isAddressEqual(onchain.challenger, wallet)) {
       throw conflict("No on-chain challenge from your linked wallet was found. Approve the bond and call challenge() first.", {
@@ -855,7 +866,7 @@ export function createJobService(deps: Deps) {
     const ruling = await store.rulings.get(job.id, rulingId)
     const rulingHash = ruling?.commitment?.hash
     if (!rulingHash) throw new HttpError(500, "internal", "Ruling commitment is missing")
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     const call: RelayerCall = outcome === "split" ? { fn: "dispute" } : { fn: "resolveChallenge", outcome, rulingHash }
     const done: OnchainState[] = outcome === "split" ? ["Disputed"] : [outcome === "release" ? "Released" : "Refunded"]
     let txHash: string
@@ -900,7 +911,7 @@ export function createJobService(deps: Deps) {
     requireStatus(job, "proposed")
     job = await syncFromChain(job)
     if (job.status !== "proposed") return job
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     if (onchain.state !== "Proposed") throw conflict(`Escrow is in state ${onchain.state}; cannot finalize`)
     if (Date.parse(iso()) < onchain.challengeDeadline * 1000) {
       throw conflict(`The challenge window is open until ${toIso(onchain.challengeDeadline)}`, { deadline: toIso(onchain.challengeDeadline) })
@@ -944,7 +955,7 @@ export function createJobService(deps: Deps) {
     } else {
       requireStatus(job, "funded")
     }
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     const actor = { uid: user.uid, role: asAdmin ? ("admin" as const) : ("client" as const) }
     let txHash: string
     if (onchain.state === "Disputed") txHash = job.lastChainAction?.txHash ?? "already-disputed"
@@ -969,7 +980,7 @@ export function createJobService(deps: Deps) {
     const at = iso()
     // The admin's decision is committed on-chain like every AI ruling.
     const { hash: rulingHash } = commit({ kind: "yorse.admin", v: 1, job: job.onchainJobId, outcome, notes, adminUid: admin.uid, at })
-    const onchain = await chain.getJob(job.onchainJobId)
+    const onchain = await readOnchain(job)
     const target = outcome === "release" ? "ResolvedRelease" : "ResolvedRefund"
     const actor = { uid: admin.uid, role: "admin" as const }
     let txHash: string
@@ -1020,7 +1031,7 @@ export function createJobService(deps: Deps) {
         job: listing,
         viewerRole: null,
         onchain: { client: "", freelancer: "", amount: "0", state: "None" as const },
-        escrowAddress: chain.escrowAddress,
+        escrowAddress: escrowOf(listing),
         arbitration: arbitrationInfo(listing),
         submissions: [],
         verifications: [],
@@ -1040,7 +1051,7 @@ export function createJobService(deps: Deps) {
       store.events.listForJob(id),
       store.complaints.listForJob(id),
       store.reviews.listForJob(id),
-      chain.getJob(job.onchainJobId).catch((e) => ({ error: (e as Error).message })),
+      readOnchain(job).catch((e) => ({ error: (e as Error).message })),
     ])
     const isAdminView = opts.admin && user.admin
     return {
@@ -1050,7 +1061,7 @@ export function createJobService(deps: Deps) {
       freelancer: job.freelancerUid ? await publicUser(job.freelancerUid) : null,
       myApplication: null,
       onchain: "error" in onchain ? onchain : { ...onchain, amount: onchain.amount.toString(), bond: onchain.bond.toString() },
-      escrowAddress: chain.escrowAddress,
+      escrowAddress: escrowOf(job),
       arbitration: arbitrationInfo(job),
       submissions,
       verifications,
