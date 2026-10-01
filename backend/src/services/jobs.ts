@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { getAddress, isAddressEqual, verifyMessage, type Hex } from "viem"
+import { getAddress, isAddressEqual, type Hex } from "viem"
 import { decide, RELEASE_CONFIDENCE_THRESHOLD } from "../ai/decision"
 import type { EvidenceFetcher } from "../ai/evidence"
 import { JUROR_SYSTEM_PROMPT, tally, type Jury, type JuryInput } from "../ai/jury"
@@ -198,7 +198,7 @@ export function createJobService(deps: Deps) {
     } catch {
       throw badRequest("Invalid wallet address")
     }
-    const valid = await verifyMessage({ address: checksummed, message: ch.message, signature }).catch(() => false)
+    const valid = await chain.verifySignature(checksummed, ch.message, signature)
     if (!valid) throw badRequest("Signature does not match this wallet")
 
     const owner = await store.users.findByWallet(checksummed)
