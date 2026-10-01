@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto"
 import { getAddress, type Hex } from "viem"
 import type { AuthUser } from "../auth"
-import type { EscrowChain } from "../chain/escrow"
-import { badRequest, conflict, notFound } from "../lib/errors"
+import { ChainError, type EscrowChain } from "../chain/escrow"
+import { badRequest, conflict, notFound, upstream } from "../lib/errors"
 import type { Store } from "../store/types"
 import type { UserProfile } from "../types"
 
@@ -91,7 +91,9 @@ export function createAgentService(deps: { store: Store; chain: Pick<EscrowChain
     const ch = profile?.walletChallenge
     if (!profile || !ch) throw badRequest("Request a challenge first")
     if (Date.parse(ch.expiresAt) < Date.parse(iso())) throw badRequest("Challenge expired; request a new one")
-    const valid = await deps.chain.verifySignature(wallet, ch.message, input.signature)
+    const valid = await deps.chain.verifySignature(wallet, ch.message, input.signature).catch((err) => {
+      throw err instanceof ChainError ? upstream("chain_error", err.message) : err
+    })
     if (!valid) throw badRequest("Signature does not match this wallet")
 
     const now = iso()

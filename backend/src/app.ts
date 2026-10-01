@@ -107,7 +107,9 @@ export function createApp(rawDeps: Deps & { corsOrigins: string[]; bus?: ChangeB
   // ---- public
   app.get("/health", async (_req, res) => {
     const chain = await deps.chain.health().catch((e) => ({ error: errorMessage(e) }))
-    res.json({ ok: !("error" in chain), chain, ai: deps.ai.providers, jury: deps.jury.jurors })
+    // Which build is live: Render sets RENDER_GIT_COMMIT; set GIT_COMMIT yourself elsewhere.
+  const commit = (process.env.RENDER_GIT_COMMIT ?? process.env.GIT_COMMIT ?? "").slice(0, 7) || null
+  res.json({ ok: !("error" in chain), commit, chain, ai: deps.ai.providers, jury: deps.jury.jurors })
   })
 
   // ---- auth

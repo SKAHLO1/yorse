@@ -198,7 +198,9 @@ export function createJobService(deps: Deps) {
     } catch {
       throw badRequest("Invalid wallet address")
     }
-    const valid = await chain.verifySignature(checksummed, ch.message, signature)
+    const valid = await chain.verifySignature(checksummed, ch.message, signature).catch((err) => {
+      throw err instanceof ChainError ? upstream("chain_error", err.message) : err
+    })
     if (!valid) throw badRequest("Signature does not match this wallet")
 
     const owner = await store.users.findByWallet(checksummed)

@@ -92,6 +92,7 @@ export interface EscrowChain {
   /**
    * Verifies a signed message for any wallet: plain EOAs, deployed smart accounts (ERC-1271) and
    * smart accounts that are not deployed yet (ERC-6492), e.g. a fresh passkey wallet.
+   * Resolves false only for an invalid signature; throws ChainError if the check itself fails.
    */
   verifySignature(address: Address, message: string, signature: Hex): Promise<boolean>
   health(): Promise<Record<string, unknown>>
@@ -285,8 +286,21 @@ export async function createEscrowChain(opts: {
       }
     },
 
-    verifySignature: (address, message, signature) =>
-      publicClient.verifyMessage({ address, message, signature }).catch(() => false),
+    // viem returns false only for a genuinely invalid signature; it throws when the on-chain check
+    // (needed for smart accounts) can't be performed. Never report an RPC failure as "wrong signature".
+    verifySignature: async (address, message, signature) => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await publicClient.verifyMessage({ address, message, signature })
+        } catch (err) {
+          console.warn(`[chain] signature check for ${address} failed (attempt ${attempt}/3): ${errorMessage(err)}`)
+          if (attempt >= 3) {
+            throw new ChainError("verifySignature", `Could not check the wallet signature on-chain (smart wallets are verified by an RPC call): ${errorMessage(err)}`)
+          }
+          await new Promise((r) => setTimeout(r, 400 * attempt))
+        }
+      }
+    },
 
     health: async () => {
       const [block, eth] = await Promise.all([
