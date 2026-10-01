@@ -7,7 +7,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { YorseMark } from "@/components/yorse-logo"
 import { errorText } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { PASSKEY_CONNECTOR_ID } from "@/lib/passkey"
 import { CHAIN, EXPLORER } from "@/lib/web3"
+import { PasskeyOption } from "./passkey-option"
 
 /** Popular wallets we suggest installing when the browser doesn't have them. Matched against EIP-6963 names. */
 const SUGGESTED = [
@@ -22,7 +24,7 @@ export function ConnectWalletDialog({ open, onOpenChange }: { open: boolean; onO
   const connectors = useConnectors()
   const connect = useConnect()
   // wagmi lists every EIP-6963 wallet it discovers plus a generic "Injected" fallback.
-  const discovered = connectors.filter((c) => c.type === "injected" && c.id !== "injected")
+  const discovered = connectors.filter((c) => c.type === "injected" && c.id !== "injected" && c.id !== PASSKEY_CONNECTOR_ID)
   const generic = connectors.find((c) => c.id === "injected")
   const wc = connectors.find((c) => c.type === "walletConnect")
   const installable = SUGGESTED.filter((s) => !discovered.some((c) => s.match.test(c.name)))
@@ -49,7 +51,11 @@ export function ConnectWalletDialog({ open, onOpenChange }: { open: boolean; onO
               <DialogDescription>Use your crypto wallet to fund escrow and get paid. Make sure it's on Arbitrum Sepolia.</DialogDescription>
             </DialogHeader>
 
-            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="mt-5">
+              <PasskeyOption onConnected={() => onOpenChange(false)} />
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
               {discovered.map((c, i) => (
                 <WalletTile
                   key={c.uid}
