@@ -149,7 +149,9 @@ function JobView() {
                       ? "Escalated by the on-chain liveness timeout: "
                       : job.dispute.source === "ai"
                         ? "The AI check did not meet the release rule: "
-                        : `Opened by ${job.dispute.source}: `}
+                        : job.dispute.source === "admin" && job.challenge
+                          ? "An admin took over the appeal before the jury ruled: "
+                          : `Opened by ${job.dispute.source}: `}
                   {job.dispute.reason}
                 </p>
                 {job.dispute.source === "jury" && <p className="mt-1">Each juror&apos;s vote and reasoning is shown below.</p>}
