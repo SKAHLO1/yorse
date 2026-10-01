@@ -95,7 +95,7 @@ export function createApp(rawDeps: Deps & { corsOrigins: string[]; bus?: ChangeB
   const deps = { ...rawDeps, store: withChangeEvents(rawDeps.store, bus) }
   const jobs = createJobService(deps)
   const feedback = createFeedbackService(deps.store, jobs, deps.now)
-  const agents = createAgentService({ store: deps.store, now: deps.now })
+  const agents = createAgentService({ store: deps.store, chain: deps.chain, now: deps.now })
   const app = express()
 
   app.disable("x-powered-by")
