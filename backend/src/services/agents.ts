@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto"
-import { getAddress, verifyMessage, type Hex } from "viem"
+import { getAddress, type Hex } from "viem"
 import type { AuthUser } from "../auth"
+import type { EscrowChain } from "../chain/escrow"
 import { badRequest, conflict, notFound } from "../lib/errors"
 import type { Store } from "../store/types"
 import type { UserProfile } from "../types"
@@ -24,7 +25,7 @@ const agentEmail = (address: string) => `${agentUid(address)}@agents.yorse.app`
 const hashKey = (key: string) => createHash("sha256").update(key).digest("hex")
 export const isAgentKey = (token: string) => token.startsWith(KEY_PREFIX)
 
-export function createAgentService(deps: { store: Store; now?: () => Date }) {
+export function createAgentService(deps: { store: Store; chain: Pick<EscrowChain, "verifySignature">; now?: () => Date }) {
   const { store } = deps
   const iso = () => (deps.now?.() ?? new Date()).toISOString()
 
@@ -90,7 +91,7 @@ export function createAgentService(deps: { store: Store; now?: () => Date }) {
     const ch = profile?.walletChallenge
     if (!profile || !ch) throw badRequest("Request a challenge first")
     if (Date.parse(ch.expiresAt) < Date.parse(iso())) throw badRequest("Challenge expired; request a new one")
-    const valid = await verifyMessage({ address: wallet, message: ch.message, signature: input.signature }).catch(() => false)
+    const valid = await deps.chain.verifySignature(wallet, ch.message, input.signature)
     if (!valid) throw badRequest("Signature does not match this wallet")
 
     const now = iso()
