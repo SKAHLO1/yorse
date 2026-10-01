@@ -1,5 +1,5 @@
 import request from "supertest"
-import { keccak256, stringToHex, type Address, type Hex } from "viem"
+import { keccak256, stringToHex, verifyMessage, type Address, type Hex } from "viem"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
 import type { EvidenceFetcher } from "../src/ai/evidence"
 import type { Jury } from "../src/ai/jury"
@@ -138,6 +138,8 @@ export function createFakeChain(clock = testClock()) {
     confirmTx: async (h) => {
       if (!txs.has(h)) throw new ChainError("confirm", "Could not confirm transaction: not found")
     },
+    // EOA signatures only in tests; the real chain also checks ERC-1271/6492 smart accounts.
+    verifySignature: (address, message, signature) => verifyMessage({ address, message, signature }).catch(() => false),
     health: async () => ({ fake: true }),
   }
   return chain
