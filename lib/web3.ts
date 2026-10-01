@@ -1,6 +1,7 @@
 import { createConfig, http, type CreateConnectorFn } from "wagmi"
 import { injected, walletConnect } from "wagmi/connectors"
 import { arbitrumSepolia } from "wagmi/chains"
+import { passkeyConnector, ZERODEV_PROJECT_ID } from "./passkey"
 
 export const CHAIN = arbitrumSepolia // Arbitrum Sepolia only. Never mainnet.
 export const CIRCLE_USDC = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d" as const
@@ -26,6 +27,9 @@ if (WALLETCONNECT_PROJECT_ID && typeof window !== "undefined") {
     }),
   )
 }
+
+// Passkey smart wallets (ERC-4337, gas sponsored by the ZeroDev paymaster). Browser only: WebAuthn.
+if (ZERODEV_PROJECT_ID && typeof window !== "undefined") connectors.push(passkeyConnector)
 
 export const wagmiConfig = createConfig({
   chains: [arbitrumSepolia],
