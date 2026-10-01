@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { api, errorText } from "@/lib/api"
 import { escrowAbi } from "@/lib/escrow-abi"
 import type { Complaint, JobDetail } from "@/lib/types"
-import { CHAIN, CIRCLE_USDC, shortAddr } from "@/lib/web3"
+import { arbitrumFees, CHAIN, CIRCLE_USDC, shortAddr } from "@/lib/web3"
 import { COMPLAINT_CATEGORIES, TxLink } from "./job-parts"
 
 function useRefresh(jobId: string) {
@@ -132,13 +132,13 @@ export function FundEscrow({ detail }: { detail: JobDetail }) {
       if (alreadyFunded) return await confirm(fundTx ?? undefined)
       if (needsApproval) {
         setPhase("approving")
-        const h = await write.mutateAsync({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "approve", args: [escrowAddress, amount], chainId: CHAIN.id })
+        const h = await write.mutateAsync({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "approve", args: [escrowAddress, amount], chainId: CHAIN.id, ...(await arbitrumFees(publicClient)) })
         const r = await publicClient.waitForTransactionReceipt({ hash: h })
         if (r.status !== "success") throw new Error("USDC approval reverted")
         await allowance.refetch()
       }
       setPhase("funding")
-      const h = await write.mutateAsync({ address: escrowAddress, abi: escrowAbi, functionName: "fund", args: [job.onchainJobId, job.freelancerWallet as `0x${string}`, amount], chainId: CHAIN.id })
+      const h = await write.mutateAsync({ address: escrowAddress, abi: escrowAbi, functionName: "fund", args: [job.onchainJobId, job.freelancerWallet as `0x${string}`, amount], chainId: CHAIN.id, ...(await arbitrumFees(publicClient)) })
       setFundTx(h)
       const r = await publicClient.waitForTransactionReceipt({ hash: h })
       if (r.status !== "success") throw new Error("Escrow funding transaction reverted")

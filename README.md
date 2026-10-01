@@ -35,7 +35,7 @@ A client either lists a job **publicly** (it appears in every user's live feed a
    - runs the AI check and applies the decision rule;
    - hashes the full verdict record and calls `proposeVerdict(outcome, verdictHash)` or `escalate(verdictHash)`. **No money moves yet.**
 5. **Optimistic AI arbitration** (the same propose → challenge → resolve shape Arbitrum uses for fraud proofs):
-   - **Challenge window** (`CHALLENGE_WINDOW_SECONDS`, 3 min on the testnet deploy, 48 h by default): only the party the proposal goes against may `challenge()` it, from their own wallet, by posting a bond (10% of the job).
+   - **Challenge window** (`CHALLENGE_WINDOW_SECONDS`, 48 h, both on the testnet deploy and by default): only the party the proposal goes against may `challenge()` it, from their own wallet, by posting a bond (10% of the job).
    - **Unchallenged:** anyone can call `finalize()` once the window ends. The backend keeper does it automatically, but the relayer isn't needed.
    - **Challenged or AI unsure:** both sides submit one argument each. Then an **AI jury** of three different models rules independently and in parallel. A strict majority of the whole panel decides, and the ruling hash goes on-chain with `resolveChallenge()`. A failed juror counts against a majority, so an outage can only send a case to a human, never decide it.
    - **Bond:** returned if the jury overturns the proposal; paid to the other side if the jury upholds it.

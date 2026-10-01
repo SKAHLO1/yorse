@@ -21,8 +21,8 @@ resolve(outcome, hash) [relayer]   Disputed   -> ResolvedRelease | ResolvedRefun
 Bond rule: returned to the challenger if the final outcome overturns the proposal, otherwise paid to
 the other party. `challengeWindow`, `relayerTimeout` and `bondBps` are immutable per deployment.
 
-Live deployment (Arbitrum Sepolia): `0xB0454dc7372c14f0AF25DD79581FA09a432977eC`
-(180 s window, 3600 s relayer timeout, 10% bond; Sourcify-verified).
+Live deployment (Arbitrum Sepolia): `0x579a4a77cc8832D091D09f1EAB733661b207239A`
+(48 h challenge window, 3600 s relayer timeout, 10% bond; Sourcify-verified).
 
 ## Commands
 

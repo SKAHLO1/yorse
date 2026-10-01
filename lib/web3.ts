@@ -42,6 +42,17 @@ declare module "wagmi" {
   }
 }
 
+/**
+ * Fee fields for Arbitrum transactions. Wallets estimate maxFeePerGas with almost no headroom, and
+ * Arbitrum's base fee moves every block, so a confirm a few seconds later can be rejected with
+ * "max fee per gas less than block base fee". On Arbitrum you only pay the actual base fee (the
+ * max is just a ceiling, and the priority fee is ignored), so a generous ceiling costs nothing extra.
+ */
+export async function arbitrumFees(client: { getBlock: () => Promise<{ baseFeePerGas: bigint | null }>; getGasPrice: () => Promise<bigint> }) {
+  const base = (await client.getBlock()).baseFeePerGas ?? (await client.getGasPrice())
+  return { maxFeePerGas: base * BigInt(3), maxPriorityFeePerGas: BigInt(0) }
+}
+
 export const shortAddr = (a?: string | null) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—")
 export const txUrl = (h: string) => `${EXPLORER}/tx/${h}`
 export const addrUrl = (a: string) => `${EXPLORER}/address/${a}`

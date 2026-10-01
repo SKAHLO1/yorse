@@ -17,7 +17,7 @@ import { api, errorText } from "@/lib/api"
 import { escrowAbi } from "@/lib/escrow-abi"
 import type { Commitment, JobDetail, JurorResult, OnchainJob, Role, Ruling } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { CHAIN, CIRCLE_USDC, shortAddr } from "@/lib/web3"
+import { arbitrumFees, CHAIN, CIRCLE_USDC, shortAddr } from "@/lib/web3"
 import { fmtDate, TxLink } from "./job-parts"
 
 function useRefresh(jobId: string) {
@@ -204,12 +204,12 @@ function ChallengeForm({ detail }: { detail: JobDetail }) {
       if (!alreadyOnchain) {
         if (needsApproval) {
           setPhase("approving")
-          const h = await write.mutateAsync({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "approve", args: [escrowAddress, bond], chainId: CHAIN.id })
+          const h = await write.mutateAsync({ address: CIRCLE_USDC, abi: erc20Abi, functionName: "approve", args: [escrowAddress, bond], chainId: CHAIN.id, ...(await arbitrumFees(publicClient)) })
           if ((await publicClient.waitForTransactionReceipt({ hash: h })).status !== "success") throw new Error("USDC approval reverted")
           await allowance.refetch()
         }
         setPhase("challenging")
-        hash = await write.mutateAsync({ address: escrowAddress, abi: escrowAbi, functionName: "challenge", args: [job.onchainJobId], chainId: CHAIN.id })
+        hash = await write.mutateAsync({ address: escrowAddress, abi: escrowAbi, functionName: "challenge", args: [job.onchainJobId], chainId: CHAIN.id, ...(await arbitrumFees(publicClient)) })
         setTx(hash)
         if ((await publicClient.waitForTransactionReceipt({ hash })).status !== "success") throw new Error("challenge() reverted")
       }
