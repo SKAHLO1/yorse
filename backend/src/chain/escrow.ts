@@ -87,8 +87,13 @@ export interface EscrowChain {
   getJob(onchainJobId: Hex, escrow?: Address): Promise<OnchainJob>
   /** Sends a relayer call, waits for the receipt, and throws with a readable reason on revert. */
   send(onchainJobId: Hex, call: RelayerCall): Promise<{ txHash: Hex }>
-  /** Confirms a client/party-submitted tx succeeded and targeted the escrow contract. */
+  /** Confirms a client/party-submitted tx succeeded and touched the escrow contract (directly or via an ERC-4337 smart account). */
   confirmTx(txHash: Hex): Promise<void>
+  /**
+   * Verifies a signed message for any wallet: plain EOAs, deployed smart accounts (ERC-1271) and
+   * smart accounts that are not deployed yet (ERC-6492), e.g. a fresh passkey wallet.
+   */
+  verifySignature(address: Address, message: string, signature: Hex): Promise<boolean>
   health(): Promise<Record<string, unknown>>
 }
 
@@ -270,13 +275,18 @@ export async function createEscrowChain(opts: {
       try {
         const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: 120_000 })
         if (receipt.status !== "success") throw new Error("transaction reverted")
-        if (!receipt.to || !isAddressEqual(receipt.to, escrowAddress)) {
-          throw new Error("transaction was not sent to the Yorse escrow contract")
-        }
+        // A smart-account (ERC-4337) transaction is sent to the EntryPoint, so accept either a direct
+        // call or one whose logs show the escrow contract itself emitted an event.
+        const direct = !!receipt.to && isAddressEqual(receipt.to, escrowAddress)
+        const viaAccount = receipt.logs.some((l) => isAddressEqual(l.address, escrowAddress))
+        if (!direct && !viaAccount) throw new Error("transaction did not interact with the Yorse escrow contract")
       } catch (err) {
         throw new ChainError("confirm", `Could not confirm transaction: ${errorMessage(err)}`, txHash)
       }
     },
+
+    verifySignature: (address, message, signature) =>
+      publicClient.verifyMessage({ address, message, signature }).catch(() => false),
 
     health: async () => {
       const [block, eth] = await Promise.all([
