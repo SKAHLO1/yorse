@@ -764,7 +764,11 @@ export function createJobService(deps: Deps) {
     })
     await logEvent(id, "argument_submitted", `The ${role} submitted an argument to the jury`, { uid: user.uid, role })
     if (updated.challenge!.arguments.client && updated.challenge!.arguments.freelancer) {
-      await runJury(id, { uid: user.uid, role }) // both sides are in: no reason to wait for the deadline
+      // Both sides are in: no reason to wait for the deadline. If an admin is taking over at this
+      // moment, the argument is still saved and the jury simply doesn't convene.
+      await runJury(id, { uid: user.uid, role }).catch((err) => {
+        if (!(err instanceof HttpError && err.status === 409)) throw err
+      })
       return (await store.jobs.get(id))!
     }
     return updated
@@ -783,6 +787,7 @@ export function createJobService(deps: Deps) {
     const job = await store.jobs.transition(id, (j) => {
       requireStatus(j, "challenged")
       if (j.pendingRuling) throw conflict("A ruling already exists for this challenge")
+      if (j.lastChainAction?.state === "pending" && j.lastChainAction.type === "dispute") throw conflict("An admin is taking over this appeal")
       const running = j.jury.state === "running" && j.jury.startedAt && Date.parse(iso()) - Date.parse(j.jury.startedAt) < VERIFICATION_STALE_MS
       if (running) throw conflict("The jury is already deliberating")
       return { jury: { state: "running", error: null, startedAt: iso(), rulingId: null }, updatedAt: iso() }
@@ -939,7 +944,9 @@ export function createJobService(deps: Deps) {
   /**
    * Hands a job to a human admin.
    * - Client: non-delivery on a funded job.
-   * - Admin: also a submitted job whose AI check keeps failing, or a challenged job whose jury can't convene.
+   * - Admin: also a submitted job whose AI check keeps failing, or an appealed (challenged) job at any
+   *   point before the jury rules. Taking over an appeal stops the jury; the bond then settles by the
+   *   admin's decision under the same rule (returned if the proposal is overturned).
    */
   async function raiseDispute(user: AuthUser, id: string, reason: string, asAdmin = false) {
     const { job, role } = await loadJobFor(user, id, { allowAdmin: asAdmin })
@@ -948,10 +955,17 @@ export function createJobService(deps: Deps) {
       if (job.status === "submitted" && !(job.verification.state === "error" || job.lastChainAction?.state === "failed")) {
         throw conflict("This submission is still being verified; retry verification instead")
       }
-      if (job.status === "challenged" && !(job.jury.state === "error" || job.lastChainAction?.state === "failed")) {
-        throw conflict("The AI jury has not failed on this challenge; let it rule")
-      }
       requireStatus(job, "funded", "submitted", "challenged")
+      if (job.status === "challenged") {
+        // Claim the job atomically so the jury can't start between this check and the dispute() tx.
+        await store.jobs.transition(id, (j) => {
+          requireStatus(j, "challenged")
+          const deliberating = j.jury.state === "running" && j.jury.startedAt && Date.parse(iso()) - Date.parse(j.jury.startedAt) < VERIFICATION_STALE_MS
+          if (deliberating) throw conflict("The AI jury is deliberating right now (usually under a minute). Try again once it finishes.")
+          if (j.lastChainAction?.state === "pending") throw conflict("An on-chain step for this job is in flight; try again in a moment")
+          return { lastChainAction: chainAction("dispute", "pending", null, null), updatedAt: iso() }
+        })
+      }
     } else {
       requireStatus(job, "funded")
     }
@@ -968,7 +982,14 @@ export function createJobService(deps: Deps) {
       dispute: { reason, source: asAdmin ? "admin" : "client", byUid: user.uid, at: iso() },
       updatedAt: iso(),
     }))
-    await logEvent(id, "disputed", `${asAdmin ? "Admin" : "Client"} opened a dispute: ${reason}`, actor, { txHash })
+    const takeover = asAdmin && job.status === "challenged"
+    await logEvent(
+      id,
+      "disputed",
+      takeover ? `An admin took over the appeal before the jury ruled: ${reason}` : `${asAdmin ? "Admin" : "Client"} opened a dispute: ${reason}`,
+      actor,
+      { txHash },
+    )
     return updated
   }
 
