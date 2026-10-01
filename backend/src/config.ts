@@ -24,8 +24,8 @@ const envSchema = z.object({
 
   // AI jury: comma-separated provider:model specs. Default picks three different models.
   JURY_MODELS: z.string().optional(),
-  // Seconds both sides may argue before the jury convenes (demo pace by default).
-  ARGUMENT_WINDOW_SECONDS: z.coerce.number().int().positive().default(180),
+  // Seconds both sides may argue after an appeal before the jury convenes (24h by default).
+  ARGUMENT_WINDOW_SECONDS: z.coerce.number().int().positive().default(86_400),
   KEEPER_INTERVAL_MS: z.coerce.number().int().min(1000).default(10_000),
 })
 

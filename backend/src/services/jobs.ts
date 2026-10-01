@@ -40,7 +40,7 @@ export interface Deps {
   ai: AiVerifier
   jury: Jury
   fetchEvidence: EvidenceFetcher
-  /** How long both sides may argue before the jury convenes. Defaults to 3 minutes (demo pace). */
+  /** How long both sides may argue before the jury convenes. Production config sets 24h; tests pass shorter. */
   argumentWindowSeconds?: number
   now?: () => Date
 }
