@@ -7,6 +7,7 @@ import type { AuthUser } from "./auth"
 import { errorMessage, forbidden, HttpError, unauthorized } from "./lib/errors"
 import { createAgentService, isAgentKey } from "./services/agents"
 import { createFeedbackService } from "./services/feedback"
+import { createChangeBus, streamHandler, withChangeEvents, type ChangeBus } from "./services/realtime"
 import { createJobService, type Deps } from "./services/jobs"
 import { ALL_STATUSES, type JobStatus } from "./types"
 
@@ -88,7 +89,10 @@ const param = (req: Request, name: string) => String(req.params[name])
 
 // ------------------------------------------------------------------ app
 
-export function createApp(deps: Deps & { corsOrigins: string[] }) {
+export function createApp(rawDeps: Deps & { corsOrigins: string[]; bus?: ChangeBus }) {
+  // Every write through the services emits a real-time "job changed" signal.
+  const bus = rawDeps.bus ?? createChangeBus()
+  const deps = { ...rawDeps, store: withChangeEvents(rawDeps.store, bus) }
   const jobs = createJobService(deps)
   const feedback = createFeedbackService(deps.store, jobs, deps.now)
   const agents = createAgentService({ store: deps.store, now: deps.now })
@@ -157,6 +161,9 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
   })
 
   // ---- me / wallet
+  // ---- real-time: one SSE stream per signed-in tab; signals say which job changed
+  api.get("/stream", streamHandler(deps.store, bus))
+
   api.get("/me", async (req, res) => {
     const profile = await jobs.ensureProfile(req.user!)
     const { walletChallenge: _omit, ...safe } = profile
@@ -304,5 +311,5 @@ export function createApp(deps: Deps & { corsOrigins: string[] }) {
     res.status(500).json({ error: { code: "internal", message: errorMessage(err) } })
   })
 
-  return Object.assign(app, { jobs })
+  return Object.assign(app, { jobs, bus })
 }

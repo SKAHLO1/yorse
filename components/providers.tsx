@@ -6,6 +6,7 @@ import { Toaster } from "sonner"
 import { WagmiProvider } from "wagmi"
 import { wagmiConfig } from "@/lib/web3"
 import { AuthProvider } from "./auth-provider"
+import { RealtimeProvider } from "./realtime-provider"
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -15,7 +16,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          {children}
+          <RealtimeProvider>{children}</RealtimeProvider>
           <Toaster theme="light" richColors closeButton position="bottom-right" />
         </AuthProvider>
       </QueryClientProvider>
