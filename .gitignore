@@ -17,6 +17,7 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files
+.env*
 
 # vercel
 .vercel
@@ -44,4 +45,3 @@ next-env.d.ts
 # firebase / service accounts
 *service-account*.json
 *-firebase-adminsdk-*.json
-config.bat
